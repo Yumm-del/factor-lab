@@ -23,7 +23,7 @@ import streamlit as st
 
 # 包导入（app.py 在项目根目录，factor_lab 是同级包）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from factor_lab import data_pipeline, dsdl, factor_engine, llm_factor, validation  # noqa: E402
+from factor_lab import data_pipeline, dsdl, factor_engine, llm_factor, strategy, validation  # noqa: E402
 
 st.set_page_config(page_title="因子实验室 · AI Factor Lab", layout="wide", page_icon="🧪")
 
@@ -34,6 +34,12 @@ st.set_page_config(page_title="因子实验室 · AI Factor Lab", layout="wide",
 @st.cache_data(show_spinner="正在加载沪深300数据面板…")
 def load_panel_cached():
     return data_pipeline.load_panel()
+
+
+@st.cache_data(show_spinner="加载指数…")
+def load_index_cached() -> pd.Series:
+    """沪深300指数收盘序列（策略基准）。"""
+    return data_pipeline.load_index()
 
 
 @st.cache_data(show_spinner="体检中…")
@@ -109,6 +115,18 @@ def fig_spread(layers_meta: dict) -> go.Figure:
     return fig
 
 
+def fig_lifecycle(lifecycle: pd.Series) -> go.Figure:
+    """因子生命周期：全样本 60 日滚动 IC 曲线（风格切换一眼可见）。"""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=lifecycle.index, y=lifecycle.values,
+                             name="60日滚动IC", fill="tozeroy",
+                             line=dict(width=1.8, color="#26a69a")))
+    fig.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig.update_layout(title="因子生命周期（全样本 60 日滚动 IC——注意风格切换）", height=260,
+                      yaxis_title="滚动IC", margin=dict(l=40, r=20, t=50, b=30))
+    return fig
+
+
 def fig_decay(decay: dict) -> go.Figure:
     """IC 衰减柱状图。"""
     fig = go.Figure()
@@ -172,6 +190,8 @@ def render_diagnosis(diag: dict):
         st.plotly_chart(fig_layer_nav(lay), width="stretch")
         st.plotly_chart(fig_layer_bar(lay), width="stretch")
     st.plotly_chart(fig_decay(diag["ic_decay"]), width="stretch")
+    if "lifecycle" in diag and len(diag["lifecycle"].dropna()) > 0:
+        st.plotly_chart(fig_lifecycle(diag["lifecycle"]), width="stretch")
 
 
 # ============================================================
@@ -334,6 +354,119 @@ def render_compare():
 
 
 # ============================================================
+# Tab 4：策略构建（因子的最后一公里）
+# ============================================================
+def fig_strategy_nav(result: dict) -> go.Figure:
+    """组合净值 vs 沪深300指数。"""
+    nav = result["nav"]
+    bench = result["benchmark_nav"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=nav.index, y=nav.values, name="因子组合（Top30 周调仓）",
+                             line=dict(width=2.5, color="#d32f2f")))
+    if bench is not None:
+        fig.add_trace(go.Scatter(x=bench.index, y=bench.values, name="沪深300指数",
+                                 line=dict(width=2, dash="dot", color="#37474f")))
+    fig.update_layout(title="组合净值 vs 沪深300（起点归一化=1，已扣交易成本）", height=380,
+                      yaxis_title="净值", legend=dict(orientation="h", y=1.1),
+                      margin=dict(l=40, r=20, t=50, b=30))
+    return fig
+
+
+def fig_strategy_excess(result: dict) -> go.Figure:
+    """超额净值（组合/基准）。"""
+    nav, bench = result["nav"], result["benchmark_nav"]
+    excess = nav / bench
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=excess.index, y=excess.values, name="超额净值",
+                             fill="tozeroy", line=dict(width=2, color="#5c6bc0")))
+    fig.add_hline(y=1, line_dash="dash", line_color="gray")
+    fig.update_layout(title="超额净值（组合/基准，>1 表示跑赢指数）", height=260,
+                      yaxis_title="超额", margin=dict(l=40, r=20, t=50, b=30))
+    return fig
+
+
+def render_strategy():
+    st.title("🚀 策略构建：从因子到组合")
+    st.markdown(
+        "> 把体检通过的因子做成**可实盘的 Top-N 等权组合**：每周按因子值选股，"
+        "扣交易成本，与沪深300指数对比。\n"
+        "> **这是回答「因子能赚多少钱」的最后一公里**——也是赛道二评委最关心的部分。"
+    )
+
+    # —— 因子来源 ——
+    source = st.radio("因子来源", ["经典因子", "AI 因子（会话内生成）"], horizontal=True)
+
+    factor_panel = None
+    if source == "经典因子":
+        factors = factor_engine.list_factors()
+        labels = {f["key"]: f"{f['name']}（{f['formula']}）" for f in factors}
+        key = st.selectbox("选择因子", list(labels.keys()), format_func=lambda k: labels[k])
+        factor_panel = dsdl.evaluate(factor_engine.get_factor(key)["expr"], panel)
+        factor_desc = factor_engine.get_factor(key)["name"]
+    else:
+        last = st.session_state.get("last_result")
+        if not last:
+            st.info("先在「AI 因子工场」生成一个因子，再来这里构建策略")
+            return
+        factor_panel = dsdl.evaluate(dsdl.parse_factor(last["expr_str"]), panel)
+        factor_desc = last["formula"]
+
+    # —— 参数 ——
+    c1, c2, c3 = st.columns(3)
+    n_stocks = c1.slider("持仓数量", 10, 100, 30, step=5)
+    reb_label = c2.selectbox("调仓频率", ["周频（5日）", "双周（10日）", "月频（20日）"], index=0)
+    rebalance = {"周频（5日）": 5, "双周（10日）": 10, "月频（20日）": 20}[reb_label]
+    cost = c3.selectbox("双边交易成本", [10, 20, 40], index=1, format_func=lambda x: f"{x} bps")
+
+    if st.button("📈 构建策略", type="primary"):
+        with st.spinner("构建组合并回测中…"):
+            index_close = load_index_cached()
+            result = strategy.build_portfolio(
+                factor_panel, panel["close"], index_close,
+                n_stocks=n_stocks, rebalance_days=rebalance, cost_bps=cost,
+            )
+            st.session_state["strategy_result"] = result
+            st.session_state["strategy_desc"] = factor_desc
+
+    result = st.session_state.get("strategy_result")
+    if result:
+        m = result["metrics"]
+        st.markdown(f"**当前因子**：`{st.session_state.get('strategy_desc', '')}`")
+        # —— 指标卡片 ——
+        bench = result["benchmark_nav"]
+        index_annual = float(bench.pct_change().dropna().mean() * 252) if bench is not None else 0.0
+        col_a, col_b, col_c, col_d, col_e = st.columns(5)
+        col_a.metric("组合年化收益", f"{m['annual_return']:+.1%}")
+        col_b.metric("沪深300同期年化", f"{index_annual:+.1%}")
+        col_c.metric("Sharpe", f"{m['sharpe']:.2f}")
+        col_d.metric("最大回撤", f"{m['max_drawdown']:.1%}")
+        col_e.metric("超额年化", f"{m.get('excess_annual', 0):+.1%}")
+
+        fig_nav = fig_strategy_nav(result)
+        st.plotly_chart(fig_nav, width="stretch")
+        col_f, col_g = st.columns(2)
+        with col_f:
+            if result["benchmark_nav"] is not None:
+                st.plotly_chart(fig_strategy_excess(result), width="stretch")
+        with col_g:
+            # 指标明细
+            st.markdown("**绩效明细**")
+            rows = [
+                ("信息比率", m.get("information_ratio", 0)),
+                ("日胜率（vs 指数）", m.get("win_rate", 0)),
+                ("回测天数", m["n_days"]),
+                ("调仓频率", f"每 {result['rebalance_days']} 日"),
+            ]
+            for name, v in rows:
+                if name == "回测天数":
+                    st.markdown(f"- {name}：**{v}** 天")
+                elif name == "调仓频率":
+                    st.markdown(f"- {name}：**{v}**")
+                else:
+                    st.markdown(f"- {name}：**{v:.2f}**")
+
+
+# ============================================================
 # 主入口
 # ============================================================
 st.sidebar.title("🧪 因子实验室")
@@ -353,10 +486,14 @@ with st.sidebar:
     )
     st.caption("数据源：baostock 日线（前复权）")
 
-tab_ai, tab_classic, tab_compare = st.tabs(["🧪 AI 因子工场", "📚 经典因子库", "⚖️ 因子对比"])
+tab_ai, tab_classic, tab_compare, tab_strategy = st.tabs(
+    ["🧪 AI 因子工场", "📚 经典因子库", "⚖️ 因子对比", "🚀 策略构建"]
+)
 with tab_ai:
     render_ai_factory()
 with tab_classic:
     render_classic_library()
 with tab_compare:
     render_compare()
+with tab_strategy:
+    render_strategy()

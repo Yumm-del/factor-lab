@@ -216,8 +216,34 @@ def ic_decay(factor: pd.DataFrame, close: pd.DataFrame, max_lag: int = 10) -> di
 # ============================================================
 
 
-def full_diagnosis(factor: pd.DataFrame, close: pd.DataFrame, n_layers: int = 5) -> dict:
-    """跑完整体检，输出一张「体检单」（dict），供 UI 与 LLM 解读消费。"""
+def rolling_ic(factor: pd.DataFrame, close: pd.DataFrame, window: int = 60) -> pd.Series:
+    """
+    全样本滚动 IC 曲线（因子生命周期）：60 日窗口的 IC 滚动均值。
+    目的：因子不是恒久有效的——滚动 IC 曲线展示因子的时变特征，
+          让「2025 年后风格切换导致失效」这类事实可见，这是因子监控的标准做法。
+    """
+    ic_table = compute_ic(factor, close, horizon=1)
+    return ic_table["ic"].rolling(window, min_periods=20).mean()
+
+
+def full_diagnosis(factor: pd.DataFrame, close: pd.DataFrame, n_layers: int = 5,
+                   window_days: int | None = 252) -> dict:
+    """
+    跑完整体检，输出一张「体检单」（dict），供 UI 与 LLM 解读消费。
+
+    参数：
+        window_days — 评分窗口（交易日）。默认 252（近 12 个月）：
+                      量化行业惯例是滚动窗口评估因子（因子有生命周期），
+                      3 年全样本平均会把「风格切换」抹平成无效。
+                      传 None 则用全样本（答辩场景可与默认窗口对照）。
+    """
+    # 因子生命周期（全样本滚动 IC）——必须在截断前计算
+    lifecycle = rolling_ic(factor, close)
+
+    if window_days is not None and len(factor) > window_days:
+        factor = factor.iloc[-window_days:]
+        close = close.iloc[-window_days:]
+
     ic_table = compute_ic(factor, close, horizon=1)
     summary = ic_summary(ic_table)
     layers = layer_backtest(factor, close, n_layers=n_layers)
@@ -230,7 +256,9 @@ def full_diagnosis(factor: pd.DataFrame, close: pd.DataFrame, n_layers: int = 5)
         "layers": layers,
         "turnover": turnover,
         "ic_decay": decay,
+        "lifecycle": lifecycle,
         "n_days": summary["n_days"],
+        "window_days": window_days,
     }
     diag["score"] = score_factor(diag)
     diag["verdict"] = verdict_of(diag["score"], ic_mean=summary["ic_mean"])

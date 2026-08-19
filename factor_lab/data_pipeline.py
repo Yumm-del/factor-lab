@@ -31,6 +31,9 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # 缓存的原始长表路径
 RAW_PATH = os.path.join(DATA_DIR, "hs300_raw.csv")
 
+# 沪深300 指数日线（策略模块的基准，单独文件）
+INDEX_PATH = os.path.join(DATA_DIR, "hs300_index.csv")
+
 # baostock 日线字段说明（字段名与 baostock 文档一致）：
 #   date    交易日期
 #   code    证券代码（sh.600000 格式）
@@ -55,7 +58,7 @@ def _ensure_baostock():
 
 
 def download_hs300_data(
-    start_date: str = "2025-06-01",
+    start_date: str = "2023-06-01",
     end_date: str = "2026-08-15",
     limit: int | None = None,
     pause: float = 0.15,
@@ -145,6 +148,38 @@ def load_raw() -> pd.DataFrame:
         df = download_hs300_data()
         save_raw(df)
     return pd.read_csv(RAW_PATH)
+
+
+def download_index(start_date: str = "2023-06-01", end_date: str = "2026-08-15") -> pd.DataFrame:
+    """下载沪深300指数（sh.000300）日线——策略模块的业绩基准。"""
+    bs = _ensure_baostock()
+    lg = bs.login()
+    if lg.error_code != "0":
+        raise RuntimeError(f"baostock 登录失败: {lg.error_msg}")
+    try:
+        rs = bs.query_history_k_data_plus(
+            "sh.000300", "date,close",
+            start_date=start_date, end_date=end_date,
+            frequency="d", adjustflag="3",
+        )
+        rows = []
+        while rs.error_code == "0" and rs.next():
+            rows.append(rs.get_row_data())
+        df = pd.DataFrame(rows, columns=["date", "close"])
+        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+        print(f"✅ 指数下载完成: {len(df)} 行")
+        return df
+    finally:
+        bs.logout()
+
+
+def load_index() -> pd.Series:
+    """加载指数收盘价序列（不存在则下载）。"""
+    if not os.path.exists(INDEX_PATH):
+        df = download_index()
+        df.to_csv(INDEX_PATH, index=False, encoding="utf-8")
+    idx = pd.read_csv(INDEX_PATH)
+    return pd.Series(idx["close"].values, index=idx["date"])
 
 
 def load_panel() -> dict[str, pd.DataFrame]:

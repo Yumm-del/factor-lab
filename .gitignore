@@ -1,0 +1,15 @@
+# 数据缓存（可从 baostock 重新下载，不入库）
+data/
+
+# 密钥
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit / 系统
+.streamlit/
+.DS_Store

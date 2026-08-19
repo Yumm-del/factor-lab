@@ -12,6 +12,7 @@
     3. 体检数字旁边永远配一句人话解读（LLM 生成），不堆原始数字
 """
 
+import json
 import os
 import sys
 
@@ -42,6 +43,22 @@ def diagnose_classic_cached(key: str):
     expr = factor_engine.get_factor(key)["expr"]
     fac = dsdl.evaluate(expr, panel)
     return validation.full_diagnosis(fac, panel["close"])
+
+
+@st.cache_data(show_spinner="加载预置示例…")
+def load_presets() -> list[dict]:
+    """预置示例（演示用，不依赖 API）→ 现算体检。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "presets.json")
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        presets = json.load(f)
+    panel = data_pipeline.load_panel()
+    for p in presets:
+        expr = dsdl.parse_factor(p["expr_str"])
+        fac = dsdl.evaluate(expr, panel)
+        p["diag"] = validation.full_diagnosis(fac, panel["close"])
+    return presets
 
 
 # ============================================================
@@ -179,6 +196,16 @@ def render_ai_factory():
     for col, t in zip(cols, templates):
         if col.button(t, width="stretch"):
             st.session_state["idea"] = t
+
+    # —— 演示模式：预置示例（离线，不调 API，评委演示的保底方案）——
+    with st.expander("📂 演示模式：载入预置示例（秒开，不调用 AI）"):
+        presets = load_presets()
+        if not presets:
+            st.caption("暂无预置示例（运行 `python scripts/make_preset.py` 生成）")
+        for p in presets:
+            if st.button(f"载入：{p['idea']}", key=f"preset_{p['idea']}",
+                         help=f"因子：{p['formula']}"):
+                st.session_state["last_result"] = p
 
     idea = st.text_input(
         "💡 因子想法（自然语言）",

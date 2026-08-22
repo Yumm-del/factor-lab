@@ -13,3 +13,9 @@ venv/
 # Streamlit / 系统
 .streamlit/
 .DS_Store
+
+# 构建产物与旧版 PDF（proposal.md 才是源文件）
+docs/*.html
+docs/proposal.pdf
+docs/proposal_v*.pdf
+docs/cover_*.png

@@ -28,11 +28,17 @@ import pandas as pd
 # 数据目录（本文件所在包的上一级 /data）
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
-# 缓存的原始长表路径
+# 缓存的原始长表路径（双股票池：沪深300 与全 A）
 RAW_PATH = os.path.join(DATA_DIR, "hs300_raw.csv")
+A_SHARE_RAW_PATH = os.path.join(DATA_DIR, "ashare_raw.csv")
 
 # 沪深300 指数日线（策略模块的基准，单独文件）
 INDEX_PATH = os.path.join(DATA_DIR, "hs300_index.csv")
+
+# 行业映射（全 A 池中性化用）：code → 申万一级行业
+INDUSTRY_PATH = os.path.join(DATA_DIR, "ashare_industry.csv")
+
+POOLS = {"hs300": RAW_PATH, "ashare": A_SHARE_RAW_PATH}
 
 # baostock 日线字段说明（字段名与 baostock 文档一致）：
 #   date    交易日期
@@ -142,12 +148,37 @@ def save_raw(df: pd.DataFrame) -> str:
     return RAW_PATH
 
 
-def load_raw() -> pd.DataFrame:
-    """加载原始长表（不存在则自动下载）。"""
+def load_raw(pool: str = "hs300") -> pd.DataFrame:
+    """加载原始长表（不存在则自动下载）。
+
+    pool: "hs300" 沪深300（不存在自动下载）/ "ashare" 全 A（不存在报错提示先跑脚本）。
+    注意：全 A 文件由 scripts/build_data_ashare.py 生成，只写数据行不写表头，
+    且列顺序为 code,date,...（脚本 FIELDS 定义）——需按实际顺序指定列名。
+    """
+    if pool == "ashare":
+        if not os.path.exists(A_SHARE_RAW_PATH):
+            raise FileNotFoundError(
+                "全 A 数据尚未生成，请先运行: PYTHONIOENCODING=utf-8 "
+                "python scripts/build_data_ashare.py（约 4 小时，支持断点续传）"
+            )
+        ashare_cols = ["code", "date", "close", "high", "low",
+                       "volume", "amount", "turn", "peTTM", "pbMRQ"]
+        return pd.read_csv(A_SHARE_RAW_PATH, header=None, names=ashare_cols)
     if not os.path.exists(RAW_PATH):
         df = download_hs300_data()
         save_raw(df)
     return pd.read_csv(RAW_PATH)
+
+
+def load_industry() -> pd.Series:
+    """行业映射：code → 申万一级行业（pd.Series，全 A 池中性化用）。"""
+    if not os.path.exists(INDUSTRY_PATH):
+        raise FileNotFoundError(
+            "行业映射表不存在，请运行: PYTHONIOENCODING=utf-8 "
+            "python scripts/build_data_ashare.py 完成下载"
+        )
+    df = pd.read_csv(INDUSTRY_PATH)
+    return pd.Series(df["industry"].values, index=df["code"])
 
 
 def download_index(start_date: str = "2023-06-01", end_date: str = "2026-08-15") -> pd.DataFrame:
@@ -182,15 +213,22 @@ def load_index() -> pd.Series:
     return pd.Series(idx["close"].values, index=idx["date"])
 
 
-def load_panel() -> dict[str, pd.DataFrame]:
+def load_panel(pool: str = "hs300") -> dict[str, pd.DataFrame]:
     """
     把长表转成 (date × code) 的 wide 面板，供因子 DSL 向量化求值。
 
+    参数：
+        pool — "hs300"（默认，300 只，快）/ "ashare"（全 A 5000+ 只，首次加载慢）
+
     返回：
-        dict：key 为数据名（close/volume/turn/pe/pb），
+        dict：key 为数据名（close/high/low/volume/amount/turn/pe/pb），
               value 为 DataFrame（index=date, columns=code）
+
+    原理：长表 → 以 (date, code) 为多级索引 → unstack 成宽表。
+    unstack 比 pivot_table 快一个量级（全 A 400 万行时差异显著）。
     """
-    df = load_raw()
+    df = load_raw(pool)
+    df = df.set_index(["date", "code"]).sort_index()
     panel = {}
     for name, col in [
         ("close", "close"),
@@ -202,10 +240,7 @@ def load_panel() -> dict[str, pd.DataFrame]:
         ("pe", "peTTM"),
         ("pb", "pbMRQ"),
     ]:
-        wide = df.pivot_table(index="date", columns="code", values=col)
-        # 统一按日期排序、按代码排序（因子计算要求对齐的面板）
-        wide = wide.sort_index()
-        panel[name] = wide
+        panel[name] = df[col].unstack().sort_index()
     return panel
 
 

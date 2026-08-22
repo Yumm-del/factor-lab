@@ -122,8 +122,8 @@ OPERATORS: dict[str, dict] = {
     "ts_std":       {"kind": "ts", "fn": _ts_std, "param_min": 2, "param_max": 120},
     "ts_zscore":    {"kind": "ts", "fn": _ts_zscore, "param_min": 5, "param_max": 120},
     "ts_rank":      {"kind": "ts", "fn": _ts_rank, "param_min": 5, "param_max": 120},
-    "ts_max":       {"kind": "ts", "fn": _ts_max, "param_min": 2, "param_max": 120},
-    "ts_min":       {"kind": "ts", "fn": _ts_min, "param_min": 2, "param_max": 120},
+    "ts_max":       {"kind": "ts", "fn": _ts_max, "param_min": 2, "param_max": 260},
+    "ts_min":       {"kind": "ts", "fn": _ts_min, "param_min": 2, "param_max": 260},
     "delay":        {"kind": "ts", "fn": _delay, "param_min": 1, "param_max": 60},
     # —— 截面算子（同一天内所有股票）——
     "rank":         {"kind": "cross", "fn": _rank},
@@ -229,6 +229,142 @@ def _validate(node: dict, depth: int, counter: list[int]) -> None:
         if "param" in node:
             raise FactorParseError(f"{op} 不应带 param")
         _validate(args[0], depth + 1, counter)
+
+
+# ============================================================
+# 二·五、公式解析器（人类可读公式 → 表达式树）
+# ============================================================
+# 目的：让"人"和"AI"用同一套 DSL。
+#   LLM 输出 JSON 表达式树；人（用户/评委）写数学公式：
+#     rank(neg(ts_std(ts_returns(close, 1), 20)))
+#   两者解析后是同构的表达式树，走完全相同的求值/体检/策略管线。
+# 实现：递归下降解析（tokenize → 语法树 → 复用 _validate 校验）。
+
+import re as _re
+
+# 注意顺序：负数优先（-?\d），否则 '-5' 会被切成 '-' 和 '5'
+_TOKEN_RE = _re.compile(r"-?\d+\.?\d*|[a-zA-Z_]\w*|[()]|[,+\-*/]")
+
+
+def _tokenize(s: str) -> list[str]:
+    """把公式字符串切成 token 列表。丢弃空白。
+    负数（'-' 紧跟数字）在正则层合并为一个 token，如 ts_returns(close, -5)。
+    """
+    return _TOKEN_RE.findall(s)
+
+
+class _FormulaParser:
+    """递归下降解析器。每个 parse_* 方法消费 token 并返回表达式树 dict。"""
+
+    def __init__(self, tokens: list[str]):
+        self.tokens = tokens
+        self.pos = 0
+
+    def peek(self) -> str | None:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def pop(self) -> str:
+        t = self.peek()
+        if t is None:
+            raise FactorParseError("公式不完整（意外的结尾）")
+        self.pos += 1
+        return t
+
+    def expect(self, s: str) -> None:
+        t = self.pop()
+        if t != s:
+            raise FactorParseError(f"语法错误：期望 {s!r}，实际是 {t!r}")
+
+    # expr := sum_expr
+    def parse_expr(self) -> dict:
+        return self.parse_sum()
+
+    # sum_expr := product_expr (('+'|'-'|'add'|'sub') product_expr)*
+    def parse_sum(self) -> dict:
+        left = self.parse_product()
+        while self.peek() in ("+", "-", "add", "sub"):
+            op = {"+": "add", "-": "sub", "add": "add", "sub": "sub"}[self.pop()]
+            right = self.parse_product()
+            left = {"op": op, "args": [left, right]}
+        return left
+
+    # product_expr := atom (('*'|'/'|'mul'|'div') atom)*
+    def parse_product(self) -> dict:
+        left = self.parse_atom()
+        while self.peek() in ("*", "/", "mul", "div"):
+            op = {"*": "mul", "/": "div", "mul": "mul", "div": "div"}[self.pop()]
+            right = self.parse_atom()
+            left = {"op": op, "args": [left, right]}
+        return left
+
+    # atom := NUMBER | LEAF | FUNC(args) | '(' expr ')'
+    def parse_atom(self) -> dict:
+        t = self.peek()
+        if t is None:
+            raise FactorParseError("公式不完整")
+        if t == "(":
+            self.pop()
+            e = self.parse_expr()
+            self.expect(")")
+            return e
+        if _re.match(r"-?\d+\.?\d*", t):
+            self.pop()
+            return {"op": "const", "value": float(t)}
+        if _re.match(r"[a-zA-Z_]\w*", t):
+            name = self.pop()
+            if self.peek() == "(":
+                return self.parse_call(name)
+            # 数据叶子（close 等）或裸常量名
+            return {"op": name}
+        self.pop()
+        raise FactorParseError(f"意外的 token: {t!r}")
+
+    # call := IDENT '(' arg (',' arg)* ')'
+    def parse_call(self, name: str) -> dict:
+        self.expect("(")
+        # 只有时序算子（ts_*）和 signed_power 的第 2 个参数才是数值 param；
+        # 其他算子（如 add(close, 5)）的数字参数解析为 const 表达式。
+        spec = OPERATORS.get(name, {})
+        takes_param = spec.get("kind") == "ts" or spec.get("needs_param")
+        args = []
+        param = None
+        while self.peek() != ")":
+            t = self.peek()
+            if (takes_param and len(args) >= 1 and param is None
+                    and t is not None and _re.match(r"-?\d+\.?\d*", t)):
+                self.pop()
+                param = float(t)
+                if param.is_integer():  # 窗口参数是整数（ts_mean(close, 5)）；5.5 留给校验报错
+                    param = int(param)
+            else:
+                args.append(self.parse_expr())
+            if self.peek() == ",":
+                self.pop()
+        self.expect(")")
+        node = {"op": name, "args": args}
+        if param is not None:
+            node["param"] = param
+        return node
+
+
+def parse_formula(s: str) -> dict:
+    """
+    人类可读公式 → 表达式树（如 "rank(ts_mean(close, 20))"）。
+    与 parse_factor 输出同构：走同一套 _validate 白名单校验。
+    支持：
+        rank(neg(ts_std(ts_returns(close, 1), 20)))   函数式
+        (ts_mean(close, 20) + ts_returns(close, 5))   中缀（+ - * /）
+        rank(ts_mean(close, 20) / ts_mean(volume, 20)) 混合
+    """
+    tokens = _tokenize(s)
+    if not tokens:
+        raise FactorParseError("公式为空")
+    parser = _FormulaParser(tokens)
+    expr = parser.parse_expr()
+    if parser.peek() is not None:  # 有多余 token（如 "rank(x))" 多余括号）
+        raise FactorParseError(f"公式有多余内容: {parser.peek()!r}")
+    _validate(expr, depth=0, counter=[0])
+    return expr
 
 
 # ============================================================
@@ -379,7 +515,42 @@ if __name__ == "__main__":
     val3 = evaluate(expr3, test_panel)
     print("值域:", round(float(val3.min().min()), 3), "~", round(float(val3.max().max()), 3))
 
-    print("\n=== 测试 4: 非法输入拦截 ===")
+    print("\n=== 测试 4: 公式解析器（人类可读公式 → 表达式树） ===")
+    formulas = [
+        "rank(ts_mean(close, 20))",
+        "rank(neg(ts_std(ts_returns(close, 1), 20)))",       # 嵌套 + 数字参数
+        "(ts_mean(close, 20) + ts_returns(close, 5))",        # 中缀加法
+        "rank(ts_mean(close, 20) / ts_mean(volume, 20))",     # 中缀除法
+        "rank((close - ts_mean(close, 20)) / ts_std(close, 20))",  # 布林带式
+        "rank(ts_mean(close, 5) * 2 - ts_mean(close, 20))",   # 优先级：* 先于 -
+        "delay(close, 5)",                                    # delay 正参数
+        "add(close, 5)",                                      # 数字当 const 表达式
+    ]
+    for f in formulas:
+        e = parse_formula(f)
+        rt = to_formula(e)
+        print(f"  {f}\n    → {rt}  | 求值 {evaluate(e, test_panel).shape}")
+        # round-trip：解析后再格式化，应保持算子结构
+        assert parse_formula(rt) == e, f"round-trip 失败: {f}"
+
+    print("\n=== 测试 5: 非法公式拦截 ===")
+    for bad in [
+        "rank(",                       # 缺右括号
+        "rank(close))",                # 多余括号
+        "ts_mean(close)",              # 缺 param
+        "ts_mean(close, 999)",         # param 越界
+        "ts_returns(close, -5)",       # 负窗口（未来函数，禁止）
+        "eval(close)",                 # 未知算子
+        "rank(close, 5)",              # 参数过多
+        "close +",                     # 尾部运算符
+    ]:
+        try:
+            parse_formula(bad)
+            print("⚠️  未拦截: ", bad)
+        except FactorParseError as e:
+            print("✅ 拦截:", str(e)[:60])
+
+    print("\n=== 测试 6: 非法输入拦截（JSON 路径） ===")
     for bad in [
         '{"op": "eval", "args": ["__import__(\'os\').system(\'rm -rf /\')"]}',  # 注入尝试
         '{"op": "ts_mean", "args": [{"op": "close"}], "param": 999}',           # 窗口越界

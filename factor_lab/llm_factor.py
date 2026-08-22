@@ -1,16 +1,20 @@
 """
-LLM 因子生成模块 ———— 自然语言 → 因子 → 体检 → AI 解读，全闭环
-================================================================
+LLM 因子生成模块 ———— 自然语言 → 因子 → 体检 → 反思迭代 → AI 解读
+====================================================================
 流程：
     1. 用户用自然语言描述因子想法（如"我想捕捉放量突破后的延续"）
     2. 系统把「DSL 算子说明书 + 数据字段说明」拼进 prompt，让 LLM 输出
        受限 JSON 表达式树（外加一句"因子逻辑"——演示环节的亮点）
     3. 解析校验（非法输出自动重试 1 次）→ 向量化求值 → 全套体检
-    4. LLM 把体检数字翻译成中文报告（结论 / 指标解读 / 风险 / 改进建议）
+    4. 体检评分不达标（<50）→ 自动反思闭环：把失败诊断（IC/换手/
+       单调性/衰减）回喂给 LLM，LLM 修改表达式结构后重新体检，
+       最多迭代 2 轮——这是"智能体"区别于"单轮代码生成器"的核心
+    5. LLM 把体检数字翻译成中文报告（结论 / 指标解读 / 风险 / 改进建议）
 
 安全设计（为什么这是"智能体"而不是"代码生成器"）：
     LLM 只能从白名单算子中组合表达式——不能执行任意代码、不能越权访问数据。
-    "AI 因子挖掘"的创新点就落在「受限生成 + 自动验证 + 自动解读」闭环上。
+    "AI 因子挖掘"的创新点就落在「受限生成 + 自动验证 + 反思迭代 + 自动解读」
+    闭环上——AI 负责"想"，结构负责"拦"，体检负责"判"，人负责"审"。
 """
 
 import json
@@ -107,7 +111,7 @@ OPERATOR_MANUAL = """
   ts_std(x, d)          滚动标准差（d: 2~120）
   ts_zscore(x, d)       滚动z-score（去趋势去量纲）（d: 5~120）
   ts_rank(x, d)         滚动百分位排名0~1（d: 5~120）
-  ts_max(x, d) / ts_min(x, d)  滚动最大/最小（d: 2~120）
+  ts_max(x, d) / ts_min(x, d)  滚动最大/最小（d: 2~260，支持52周高点类因子）
   ts_corr(x, y, d)      x与y的滚动相关（d: 2~120）
   delay(x, d)           滞后d期（d: 1~60）
 【截面算子】同一天所有股票之间：
@@ -163,6 +167,54 @@ def build_generation_prompt(idea: str) -> tuple[str, str]:
 
 
 # ============================================================
+# 二、反思迭代（体检不达标 → 反馈 → 重新生成）
+# ============================================================
+
+# 体检评分低于该分触发反思（<45 为"淘汰"档；50 留出可用边缘的提升空间）
+REFLECT_THRESHOLD = 50.0
+# 最多自动反思 2 轮（共 3 次生成）——迭代收益递减，控制 API 成本
+MAX_REFLECT_ROUNDS = 2
+
+REFLECT_SYSTEM = (
+    "你是一位资深量化研究员，正在迭代优化一个因子。\n"
+    "你上一版表达式体检不达标。体检数据会告诉你失败原因（如 IC 过低、"
+    "换手过高、分层单调性破裂、信号衰减过快）。\n"
+    "你的任务：分析失败原因，修改表达式结构，输出修正后的受限 JSON 表达式树。\n"
+    "规则与首次生成相同：\n"
+    "1. 只能使用白名单算子，禁止任何白名单之外的运算\n"
+    "2. 表达式深度不超过 6 层，节点数不超过 40\n"
+    "3. 输出 JSON 对象，格式：{\"rationale\": \"修正逻辑一句话（说明改了哪里）\", \"expr\": {表达式树}}\n"
+    "4. 针对体检暴露的具体问题修改，不要推翻重来：\n"
+    "   - IC 过低/不稳定 → 换更稳健的时序窗口或截面排名\n"
+    "   - 换手过高 → 加长窗口均值（平滑信号）或降低对短窗的依赖\n"
+    "   - 分层单调性破裂 → 检查是否过度依赖单一字段，增加逻辑组合\n"
+    "   - 衰减过快 → 用更长周期的 ts_returns 或均值结构\n"
+    "5. 如果认为当前方向不可救，可以换一个同主题的思路（但必须仍是量价/基本面逻辑）"
+)
+
+
+def build_reflect_prompt(idea: str, formula: str, rationale: str, diag: dict) -> str:
+    """构造反思 prompt：上版因子 + 体检失败数据 → 要求输出修正表达式。"""
+    return f"""{GENERATION_EXAMPLES}
+
+以下是完整的算子说明书：
+{OPERATOR_MANUAL}
+
+用户想法：{idea}
+
+你上一版因子：{formula}
+上版因子逻辑：{rationale}
+
+体检结果（未达标）：
+{diagnosis_to_text(diag)}
+
+请分析失败原因，修改表达式结构后重新输出。
+输出 JSON（只输出 JSON，不要任何多余文字）：
+{{"rationale": "修正后的因子逻辑一句话（说明改了哪里）", "expr": {{...}}}}
+"""
+
+
+# ============================================================
 # 二、体检报告解读
 # ============================================================
 
@@ -211,35 +263,62 @@ def build_interpret_prompt(formula: str, rationale: str, diag: dict) -> str:
 # ============================================================
 
 
-def generate_factor(idea: str, panel: dict, close: pd.DataFrame) -> dict:
+def generate_factor(idea: str, panel: dict, close: pd.DataFrame,
+                    max_reflect_rounds: int = MAX_REFLECT_ROUNDS) -> dict:
     """
-    端到端：自然语言想法 → 因子表达式 → 体检 → AI 解读。
+    端到端：自然语言想法 → 因子表达式 → 体检 → 反思迭代 → AI 解读。
 
     参数：
         idea  — 用户用自然语言描述的因子想法
         panel — load_panel() 数据面板（含 close 等）
         close — 收盘价面板（验证模块用）
+        max_reflect_rounds — 体检不达标时最多自动反思轮数（默认 2，共 3 次生成）
     返回：
-        dict：{idea, rationale, expr, expr_str, formula, tree, diag, report}
+        dict：{idea, rationale, expr, expr_str, formula, tree, diag, report,
+               rounds, n_rounds}
+              rounds — 每轮迭代记录（[{round, formula, score, verdict}]，
+                       1 轮 = 无反思；>1 轮 = 触发了反思闭环）
+              n_rounds — 实际轮数（演示/报告中展示"智能体迭代了 N 次"）
     """
+    # 首轮：从自然语言想法生成初始表达式
     system, user = build_generation_prompt(idea)
     result = _llm_json(system, user)
 
-    rationale = result.get("rationale", "")
-    expr_dict = result.get("expr")
-    if not isinstance(expr_dict, dict):
-        raise RuntimeError("LLM 输出缺少 expr 字段")
+    rounds: list[dict] = []
+    for round_i in range(1, max_reflect_rounds + 2):  # 1 + 反思轮数（最多 3 次生成）
+        rationale = result.get("rationale", "")
+        expr_dict = result.get("expr")
+        if not isinstance(expr_dict, dict):
+            raise RuntimeError("LLM 输出缺少 expr 字段")
 
-    # 校验（非法时抛 FactorParseError，UI 层提示用户换个说法）
-    expr = dsdl.parse_factor(json.dumps(expr_dict))
-    formula = dsdl.to_formula(expr)
-    tree = dsdl.render_tree(expr)
+        # 校验（非法时抛 FactorParseError，UI 层提示用户换个说法）
+        expr = dsdl.parse_factor(json.dumps(expr_dict))
+        formula = dsdl.to_formula(expr)
+        tree = dsdl.render_tree(expr)
 
-    # 求值 + 体检
-    factor_panel = dsdl.evaluate(expr, panel)
-    diag = validation.full_diagnosis(factor_panel, close)
+        # 求值 + 体检
+        factor_panel = dsdl.evaluate(expr, panel)
+        diag = validation.full_diagnosis(factor_panel, close)
 
-    # AI 解读（Markdown 文本，不是 JSON）
+        rounds.append({
+            "round": round_i,
+            "formula": formula,
+            "score": diag["score"],
+            "verdict": diag["verdict"]["label"],
+        })
+
+        # 达标（>=50）或已达最大轮数 → 停止迭代
+        if diag["score"] >= REFLECT_THRESHOLD or round_i > max_reflect_rounds:
+            break
+
+        # 不达标 → 反思闭环：把失败诊断回喂 LLM，修改表达式后重新体检。
+        # 这轮生成是"有依据的修正"而非"重试"——体检数据就是修改的依据。
+        result = _llm_json(
+            REFLECT_SYSTEM,
+            build_reflect_prompt(idea, formula, rationale, diag),
+        )
+
+    # AI 解读（Markdown 文本，不是 JSON）——只解读最终版因子
     report_text = _llm_text(
         INTERPRET_SYSTEM,
         build_interpret_prompt(formula, rationale, diag),
@@ -254,6 +333,8 @@ def generate_factor(idea: str, panel: dict, close: pd.DataFrame) -> dict:
         "tree": tree,
         "diag": diag,
         "report": report_text,
+        "rounds": rounds,
+        "n_rounds": len(rounds),
     }
 
 

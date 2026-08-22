@@ -16,6 +16,7 @@ import json
 import os
 import sys
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -23,7 +24,9 @@ import streamlit as st
 
 # 包导入（app.py 在项目根目录，factor_lab 是同级包）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from factor_lab import data_pipeline, dsdl, factor_engine, llm_factor, strategy, validation  # noqa: E402
+from factor_lab import (  # noqa: E402
+    data_pipeline, dsdl, factor_engine, llm_factor, neutralize, strategy, validation,
+)
 
 st.set_page_config(page_title="因子实验室 · AI Factor Lab", layout="wide", page_icon="🧪")
 
@@ -31,9 +34,10 @@ st.set_page_config(page_title="因子实验室 · AI Factor Lab", layout="wide",
 # ============================================================
 # 数据加载（缓存：数据文件不变就不重新加载）
 # ============================================================
-@st.cache_data(show_spinner="正在加载沪深300数据面板…")
-def load_panel_cached():
-    return data_pipeline.load_panel()
+@st.cache_data(show_spinner="正在加载数据面板…")
+def load_panel_cached(pool: str = "hs300"):
+    """股票池面板（全 A 首次加载较慢，之后由 Streamlit 缓存秒回）。"""
+    return data_pipeline.load_panel(pool)
 
 
 @st.cache_data(show_spinner="加载指数…")
@@ -43,12 +47,52 @@ def load_index_cached() -> pd.Series:
 
 
 @st.cache_data(show_spinner="体检中…")
-def diagnose_classic_cached(key: str):
-    """经典因子体检（缓存：同一因子只算一次，对比页重进秒开）。"""
-    panel = data_pipeline.load_panel()
+def diagnose_classic_cached(key: str, pool: str = "hs300", style: str = "none"):
+    """经典因子体检（缓存：同一因子×池子×中性化只算一次）。"""
+    panel = data_pipeline.load_panel(pool)
     expr = factor_engine.get_factor(key)["expr"]
     fac = dsdl.evaluate(expr, panel)
+    fac = neutralize_factor(fac, panel, style)
     return validation.full_diagnosis(fac, panel["close"])
+
+
+@st.cache_data(show_spinner="策略回测中（Top30 周频、扣双边成本）…")
+def build_strategy_cached(expr_str: str, pool: str = "hs300", style: str = "none") -> dict:
+    """因子 → 组合策略回测（缓存：expr_str×池子×中性化作键）。
+
+    与「策略构建」页完全相同的参数（Top30 / 周频 / 20bps），
+    保证对比页的 PK 结果可以直接映射到单因子策略页。"""
+    panel = data_pipeline.load_panel(pool)
+    index_close = data_pipeline.load_index()
+    expr = dsdl.parse_factor(expr_str)
+    fac = dsdl.evaluate(expr, panel)
+    fac = neutralize_factor(fac, panel, style)
+    return strategy.build_portfolio(fac, panel["close"], index_close,
+                                    n_stocks=30, rebalance_days=5, cost_bps=20.0)
+
+
+@st.cache_data
+def industry_cached() -> pd.Series:
+    """行业映射（全 A 下载完成后可用）。"""
+    return data_pipeline.load_industry()
+
+
+def neutralize_factor(fac: pd.DataFrame, panel: dict, style: str) -> pd.DataFrame:
+    """按侧边栏设置对因子做截面中性化（无/行业/行业+市值）。
+
+    行业表不存在（全 A 下载未完成）时降级为不中性化并提示。"""
+    if style == "none":
+        return fac
+    try:
+        industry = industry_cached()
+    except FileNotFoundError:
+        st.warning("行业映射表尚未生成（全 A 下载中），本次体检跳过中性化。")
+        return fac
+    log_size = None
+    if style == "industry+size":
+        cap = neutralize.mktcap_proxy(panel)
+        log_size = np.log(cap)  # log 变换：消除量纲与右偏
+    return neutralize.neutralize(fac, industry, log_size, style)
 
 
 @st.cache_data(show_spinner="加载预置示例…")
@@ -80,7 +124,8 @@ def fig_ic_series(ic_table: pd.DataFrame) -> go.Figure:
                              line=dict(width=2, color="#ff6b6b")))
     fig.add_hline(y=0, line_dash="dash", line_color="gray")
     fig.update_layout(title="每日 IC（因子值与下期收益的截面相关）", height=320,
-                      yaxis_title="IC", xaxis_title="", legend=dict(orientation="h", y=1.1),
+                      yaxis_title="IC", xaxis_title="", legend=dict(x=1.0, xanchor="right", y=1.0, yanchor="top",
+                                   bgcolor="rgba(255,255,255,0.55)"),
                       margin=dict(l=40, r=20, t=50, b=30))
     return fig
 
@@ -98,7 +143,8 @@ def fig_layer_nav(layers_meta: dict) -> go.Figure:
     fig.add_trace(go.Scatter(x=bench_nav.index, y=bench_nav, name="等权基准",
                              line=dict(width=2, dash="dot", color="#37474f")))
     fig.update_layout(title="分层组合累计净值（L1=因子值最高层，逐日调仓）", height=340,
-                      yaxis_title="净值（起点=1）", legend=dict(orientation="h", y=1.1),
+                      yaxis_title="净值（起点=1）", legend=dict(x=1.0, xanchor="right", y=1.0, yanchor="top",
+                                   bgcolor="rgba(255,255,255,0.55)"),
                       margin=dict(l=40, r=20, t=50, b=30))
     return fig
 
@@ -161,11 +207,21 @@ def render_diagnosis(diag: dict):
     lay = diag["layers"]
     verdict = diag["verdict"]
 
-    # —— 结论横幅 ——
-    color_map = {"优秀": "🟢", "可用": "🟠", "淘汰": "🔴"}
+    # —— 结论横幅（彩色徽章 + 人话结论）——
+    badge_map = {"优秀": "#16a34a", "可用": "#ea580c", "淘汰": "#dc2626"}
+    badge = badge_map[verdict["label"]]
     st.markdown(
-        f"### {color_map[verdict['label']]} 体检结论：**{verdict['label']}**　评分 **{diag['score']}/100**\n\n"
-        f"> {verdict['text']}"
+        f"""
+        <div style="border:1px solid {badge}33; background:{badge}0d; border-radius:10px;
+                    padding:12px 16px; margin-bottom:6px;">
+          <span style="background:{badge}; color:#fff; border-radius:6px;
+                       padding:2px 12px; font-weight:700; font-size:15px;">{verdict['label']}</span>
+          <span style="font-weight:700; font-size:17px; margin-left:12px;">评分 {diag['score']}/100</span>
+          <span style="color:#64748b; font-size:14px; margin-left:8px;">近 {diag['window_days']} 个交易日</span>
+          <div style="margin-top:6px; color:#334155;">{verdict['text']}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     # —— 核心指标卡片 ——
@@ -192,6 +248,40 @@ def render_diagnosis(diag: dict):
     st.plotly_chart(fig_decay(diag["ic_decay"]), width="stretch")
     if "lifecycle" in diag and len(diag["lifecycle"].dropna()) > 0:
         st.plotly_chart(fig_lifecycle(diag["lifecycle"]), width="stretch")
+
+
+# ============================================================
+# Tab 1：AI 因子工场（核心卖点）
+# ============================================================
+def _local_report(formula: str, diag: dict) -> str:
+    """手动表达式编辑的本地报告：不调 API，把体检数字翻译成人话。
+    与 LLM 解读结构对齐（画像/结论/指标/建议），保证手动与 AI 路径观感一致。"""
+    s = diag["ic_summary"]
+    lay = diag["layers"]
+    decay = diag["ic_decay"]
+    lag1, lag5, lag10 = decay.get(1), decay.get(5), decay.get(10)
+    decay_txt = (f"信号强度随持有期下降（lag1 {lag1:+.3f} → lag10 {lag10:+.3f}），"
+                 "属短线信号，实盘需更高调仓频率" if lag10 is not None and abs(lag1) > abs(lag10) else
+                 "信号随持有期衰减平缓，低频调仓即可保留大部分收益")
+    direction = "因子值越高、未来收益越高" if s["ic_mean"] > 0 else "因子值越低、未来收益越高（反向）"
+    return (
+        f"## 因子画像\n"
+        f"`{formula}` —— 手动输入的手工表达式。\n\n"
+        f"## 体检结论\n"
+        f"**{diag['verdict']['text']}**（评分 {diag['score']:.1f}/100，"
+        f"基于近 {diag['window_days']} 个交易日滚动窗口）\n\n"
+        f"## 关键指标解读\n"
+        f"- **方向**：{direction}。近一年 IC 均值 {s['ic_mean']:+.4f}，"
+        f"{'统计显著（|t|≥2）' if abs(s['ic_t']) >= 2 else '统计上还不够显著'}。\n"
+        f"- **稳定性**：IR（信息比率）{s['ic_ir']:.2f}，IC 为正天数占比 {s['ic_positive']:.0%}"
+        f"——{'信号稳定' if s['ic_positive'] > 0.55 else '信号时好时坏，需谨慎'}。\n"
+        f"- **分层单调性**：L1（最高层）多空年化 {lay['spread_annual']:+.1%}，"
+        f"单调性 {lay['monotonic']:+.2f}（{'层级区分清晰' if lay['monotonic'] > 0.5 else '层级区分一般'}）。\n"
+        f"- **实盘成本**：组合日换手 {diag['turnover']:.1%}，{decay_txt}。\n"
+        f"## 建议\n"
+        f"- 可到「🚀 策略构建」把该因子直接做成组合策略，看扣成本后的真实净值。\n"
+        f"- 想改进可调整窗口参数（如 5→10）或组合多个算子再体检。"
+    )
 
 
 # ============================================================
@@ -241,9 +331,60 @@ def render_ai_factory():
             with st.spinner("AI 正在生成因子表达式…"):
                 result = llm_factor.generate_factor(idea, panel, panel["close"])
 
+            if style != "none":
+                # 中性化开启：按当前设置重算体检（报告用本地模板，保证数字与文字一致）
+                fac2 = neutralize_factor(dsdl.evaluate(result["expr"], panel), panel, style)
+                result["diag"] = validation.full_diagnosis(fac2, panel["close"])
+                result["report"] = _local_report(result["formula"], result["diag"])
+
             st.session_state["last_result"] = result
         except Exception as e:  # noqa: BLE001
             st.error(f"生成失败：{e}")
+
+    # —— 手动表达式编辑：评委亲自动手改因子（不依赖 AI/API）——
+    with st.expander("✏️ 手动表达式编辑（不调 API：粘贴公式或 JSON 直接体检）"):
+        mode = st.radio("输入方式", ["📝 人类可读公式", "🧬 JSON 表达式树"],
+                        horizontal=True, label_visibility="collapsed")
+        if mode == "📝 人类可读公式":
+            default_src = "rank(ts_mean(close, 5) / ts_mean(volume, 20))"
+            src = st.text_input("公式", value=default_src,
+                                help="算子白名单：ts_returns / ts_mean / ts_std / ts_zscore / "
+                                     "ts_rank / ts_max / ts_min / ts_corr / delay / rank / "
+                                     "normalize / add / sub / mul / div / signed_power / log / "
+                                     "abs / neg / const，支持 + - * / 与括号")
+        else:
+            default_src = ('{"op": "rank", "args": [{"op": "div", "args": ['
+                           '{"op": "ts_mean", "args": [{"op": "close"}], "param": 5}, '
+                           '{"op": "ts_mean", "args": [{"op": "volume"}], "param": 20}]}]}')
+            src = st.text_input("JSON 表达式树", value=default_src)
+        want_report = st.checkbox("调用 AI 生成解读报告（需 API，约 10 秒）", value=False)
+        if st.button("🔬 解析并体检", type="primary", width="stretch", disabled=not src.strip()):
+            try:
+                expr = dsdl.parse_formula(src) if mode.startswith("📝") else dsdl.parse_factor(src)
+                formula = dsdl.to_formula(expr)
+                factor_panel = neutralize_factor(dsdl.evaluate(expr, panel), panel, style)
+                diag = validation.full_diagnosis(factor_panel, panel["close"])
+                if want_report:
+                    with st.spinner("AI 解读中…"):
+                        report = llm_factor._llm_text(
+                            llm_factor.INTERPRET_SYSTEM,
+                            llm_factor.build_interpret_prompt(
+                                formula, "手动输入，无 AI 逻辑自述", diag),
+                        )
+                else:
+                    report = _local_report(formula, diag)
+                st.session_state["last_result"] = {
+                    "idea": "手动编辑",
+                    "rationale": "手动输入的表达式",
+                    "expr": expr,
+                    "expr_str": json.dumps(expr, ensure_ascii=False),
+                    "formula": formula,
+                    "tree": dsdl.render_tree(expr),
+                    "diag": diag,
+                    "report": report,
+                }
+            except Exception as e:  # noqa: BLE001
+                st.error(f"解析失败：{e}")
 
     result = st.session_state.get("last_result")
     if result:
@@ -287,7 +428,7 @@ def render_classic_library():
 
     if st.button("🔬 开始体检", type="primary"):
         with st.spinner("体检中…"):
-            st.session_state[f"diag_{key}"] = diagnose_classic_cached(key)
+            st.session_state[f"diag_{key}"] = diagnose_classic_cached(key, pool, style)
 
     diag = st.session_state.get(f"diag_{key}")
     if diag:
@@ -312,9 +453,11 @@ def render_compare():
     rows = []
     with st.spinner("体检全部经典因子（首次约 10 秒，之后秒开）…"):
         for f in factor_engine.list_factors():
-            d = diagnose_classic_cached(f["key"])
+            d = diagnose_classic_cached(f["key"], pool, style)
             rows.append({
                 "因子": f["name"], "类型": "经典",
+                "expr_str": json.dumps(factor_engine.get_factor(f["key"])["expr"],
+                                       ensure_ascii=False),
                 "IC均值": d["ic_summary"]["ic_mean"],
                 "IR": d["ic_summary"]["ic_ir"],
                 "多空年化": d["layers"]["spread_annual"],
@@ -327,6 +470,7 @@ def render_compare():
         d = result["diag"]
         rows.append({
             "因子": result["formula"][:30] + "…", "类型": "AI 生成",
+            "expr_str": result["expr_str"],
             "IC均值": d["ic_summary"]["ic_mean"],
             "IR": d["ic_summary"]["ic_ir"],
             "多空年化": d["layers"]["spread_annual"],
@@ -352,6 +496,64 @@ def render_compare():
                       margin=dict(l=40, r=20, t=50, b=80))
     st.plotly_chart(fig, width="stretch")
 
+    # ============ 策略层 PK：体检只是门槛，真金白银才是结果 ============
+    st.divider()
+    st.subheader("🚀 策略层 PK：谁的组合真的赚得多？")
+    st.markdown(
+        "> 每个因子直接做成 **Top-30 周频组合**（每周调仓、双边成本 20bps、与沪深300指数对比）"
+        "——体检评分是「因子该不该信」，这里是「实际能赚多少」。"
+        "首次计算约 15 秒（11 个因子全量回测），之后秒开。"
+    )
+    with st.spinner("正在回测全部因子的组合策略…"):
+        strat_rows = []
+        for r in rows:
+            s = build_strategy_cached(r["expr_str"], pool, style)
+            m = s["metrics"]
+            strat_rows.append({
+                "因子": r["因子"], "类型": r["类型"],
+                "年化": m["annual_return"],
+                "超额(年化)": m.get("excess_annual"),
+                "Sharpe": m.get("sharpe"),
+                "最大回撤": m.get("max_drawdown"),
+                "平均换手": m.get("avg_turnover"),
+                "评分": r["评分"],
+                "nav": s["nav"], "benchmark_nav": s["benchmark_nav"],
+            })
+    strat_df = pd.DataFrame(strat_rows).sort_values("年化", ascending=False).reset_index(drop=True)
+
+    # 净值对比图：每因子一条线，AI 因子橙色加粗
+    fig_pk = go.Figure()
+    for row in strat_df.itertuples():
+        if row.nav is None:
+            continue
+        is_ai = row.类型 == "AI 生成"
+        fig_pk.add_trace(go.Scatter(
+            x=row.nav.index, y=row.nav.values, name=row.因子,
+            line=dict(width=3 if is_ai else 1.4, color="#ff7043" if is_ai else "#90a4ae"),
+            opacity=1.0 if is_ai else 0.8))
+    bench_ref = next((r.benchmark_nav for r in strat_df.itertuples()
+                      if r.benchmark_nav is not None), None)
+    if bench_ref is not None:
+        fig_pk.add_trace(go.Scatter(x=bench_ref.index, y=bench_ref.values,
+                                    name="沪深300指数", line=dict(width=2, dash="dot",
+                                                                  color="#37474f")))
+    fig_pk.update_layout(title="组合累计净值对比（起点=1，已扣成本；橙色=AI 因子，点击图例可开关）",
+                         height=420, yaxis_title="净值",
+                         legend=dict(x=1.0, xanchor="right", y=1.0, yanchor="top",
+                                     bgcolor="rgba(255,255,255,0.55)", font=dict(size=10)),
+                         margin=dict(l=40, r=20, t=50, b=30))
+    st.plotly_chart(fig_pk, width="stretch")
+
+    # 指标表：按年化排序
+    show_cols = ["因子", "类型", "年化", "超额(年化)", "Sharpe", "最大回撤", "平均换手", "评分"]
+    st.dataframe(strat_df[show_cols].style
+                 .bar(subset=["年化"], color="#5c6bc0")
+                 .highlight_max(subset=["年化", "超额(年化)", "Sharpe"], color="#e8f5e9")
+                 .format({"年化": "{:+.1%}", "超额(年化)": "{:+.1%}",
+                          "Sharpe": "{:.2f}", "最大回撤": "{:.1%}",
+                          "平均换手": "{:.0%}", "评分": "{:.1f}"}),
+                 width="stretch", hide_index=True)
+
 
 # ============================================================
 # Tab 4：策略构建（因子的最后一公里）
@@ -367,7 +569,8 @@ def fig_strategy_nav(result: dict) -> go.Figure:
         fig.add_trace(go.Scatter(x=bench.index, y=bench.values, name="沪深300指数",
                                  line=dict(width=2, dash="dot", color="#37474f")))
     fig.update_layout(title="组合净值 vs 沪深300（起点归一化=1，已扣交易成本）", height=380,
-                      yaxis_title="净值", legend=dict(orientation="h", y=1.1),
+                      yaxis_title="净值", legend=dict(x=1.0, xanchor="right", y=1.0, yanchor="top",
+                                   bgcolor="rgba(255,255,255,0.55)"),
                       margin=dict(l=40, r=20, t=50, b=30))
     return fig
 
@@ -401,14 +604,16 @@ def render_strategy():
         factors = factor_engine.list_factors()
         labels = {f["key"]: f"{f['name']}（{f['formula']}）" for f in factors}
         key = st.selectbox("选择因子", list(labels.keys()), format_func=lambda k: labels[k])
-        factor_panel = dsdl.evaluate(factor_engine.get_factor(key)["expr"], panel)
+        factor_panel = neutralize_factor(
+            dsdl.evaluate(factor_engine.get_factor(key)["expr"], panel), panel, style)
         factor_desc = factor_engine.get_factor(key)["name"]
     else:
         last = st.session_state.get("last_result")
         if not last:
             st.info("先在「AI 因子工场」生成一个因子，再来这里构建策略")
             return
-        factor_panel = dsdl.evaluate(dsdl.parse_factor(last["expr_str"]), panel)
+        factor_panel = neutralize_factor(
+            dsdl.evaluate(dsdl.parse_factor(last["expr_str"]), panel), panel, style)
         factor_desc = last["formula"]
 
     # —— 参数 ——
@@ -476,13 +681,50 @@ st.sidebar.markdown(
     "— 北大金融AI智能体创新大赛 · 赛道二 —"
 )
 
-panel = load_panel_cached()
+# —— 股票池 + 中性化设置（全局生效）——
+pool_label = st.sidebar.radio(
+    "股票池", ["沪深300（300 只，快）", "全 A（5000+ 只，首次加载慢）"], key="pool_sel")
+pool = "hs300" if pool_label.startswith("沪深300") else "ashare"
+style = st.sidebar.selectbox(
+    "因子中性化",
+    ["无", "行业", "行业+市值"],
+    help="把因子值对行业/市值回归取残差，剥离『选股其实在选行业/大小盘』的成分。"
+         "行业映射表需全 A 数据下载完成后才可用。",
+)
+style_map = {"无": "none", "行业": "industry", "行业+市值": "industry+size"}
+
+panel = load_panel_cached(pool)
+
+# —— 首屏 hero：30 秒讲清"这是什么"——
+st.markdown(
+    """
+    <div style="background:linear-gradient(135deg,#1e3a8a 0%,#2563eb 55%,#3b82f6 100%);
+                border-radius:16px; padding:28px 32px; margin-bottom:8px;">
+      <div style="font-size:30px; font-weight:700; color:#ffffff; letter-spacing:1px;">
+        🧪 因子实验室 <span style="font-size:18px; font-weight:400; opacity:.85;">AI Factor Lab</span>
+      </div>
+      <div style="font-size:16px; color:#dbeafe; margin-top:6px;">
+        用一句话描述因子想法 → AI 生成<b>受限表达式</b> → 机构级体检 → 可实盘策略
+      </div>
+      <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
+        <span style="background:rgba(255,255,255,.18); color:#fff; border-radius:20px;
+                     padding:4px 14px; font-size:13px;">🔒 18 个白名单算子 · 不执行任意代码</span>
+        <span style="background:rgba(255,255,255,.18); color:#fff; border-radius:20px;
+                     padding:4px 14px; font-size:13px;">📊 IC / 分层 / 换手 / 衰减 · 全套体检</span>
+        <span style="background:rgba(255,255,255,.18); color:#fff; border-radius:20px;
+                     padding:4px 14px; font-size:13px;">💰 Top30 周频 · 扣双边成本 · 对沪深300</span>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 with st.sidebar:
     st.markdown("#### 数据状态")
     st.markdown(
-        f"- 股票池：沪深300（{panel['close'].shape[1]} 只）\n"
+        f"- 股票池：{'沪深300' if pool == 'hs300' else '全 A'}（{panel['close'].shape[1]} 只）\n"
         f"- 区间：{panel['close'].index[0]} ~ {panel['close'].index[-1]}\n"
-        f"- 交易日：{panel['close'].shape[0]} 天"
+        f"- 交易日：{panel['close'].shape[0]} 天\n"
+        f"- 中性化：{'无' if style == 'none' else style}"
     )
     st.caption("数据源：baostock 日线（前复权）")
 

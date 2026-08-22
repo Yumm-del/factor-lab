@@ -43,7 +43,7 @@ AI 挖因子，能安全吗？能信吗？能赚钱吗？——因子实验室�
 | 项目封面（16:9） | ⏳ 待制作 | 规划：深蓝学术风封面图（PIL 生成 1920×1080） |
 | 项目 PDF 说明文档 | ✅ 已有 | docs/proposal.html → 打印 PDF |
 | 项目 Demo | ✅ 已有 | 工作台（streamlit 应用） |
-| 核心代码 | ✅ 已有 | GitHub 仓库 |
+| 核心代码 | ✅ 已发布 | GitHub: github.com/Yumm-del/factor-lab（v0.9，2026-08，MIT） |
 | 演示视频 | ⏳ 待录 | docs/voiceover.md 口播稿已备 |
 | 项目 PPT | ⏳ 可选 | 待确认是否要做 |
 
@@ -55,4 +55,4 @@ AI 挖因子，能安全吗？能信吗？能赚钱吗？——因子实验室�
 - [ ] 项目封面图（16:9）生成并上传
 - [ ] proposal.html 打印 PDF（A4、背景图形）核对封面/目录/署名
 - [ ] 演示视频（如需要）按 voiceover.md 录制剪辑
-- [ ] GitHub 仓库可公开访问（README 已更新）
+- [x] GitHub 仓库可公开访问（README 已更新）——github.com/Yumm-del/factor-lab ✅ 2026-08-22 发布

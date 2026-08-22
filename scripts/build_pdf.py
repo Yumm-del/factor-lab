@@ -16,6 +16,7 @@
 
 import os
 import subprocess
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HTML = os.path.join(ROOT, "docs", "proposal.html")
@@ -36,6 +37,12 @@ def find_edge() -> str:
 
 
 def main() -> None:
+    # 0. 先重新生成 HTML（proposal.md → proposal.html），保证 PDF 与源文档同步
+    html_builder = os.path.join(ROOT, "scripts", "build_proposal_html.py")
+    r = subprocess.run([sys.executable, html_builder], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=120)
+    if r.returncode != 0:
+        raise SystemExit(f"生成 HTML 失败：{r.stderr[-300:]}")
     if not os.path.exists(HTML):
         raise SystemExit("缺少 docs/proposal.html，先跑 build_proposal_html.py")
     edge = find_edge()
@@ -43,12 +50,17 @@ def main() -> None:
     # 先试正式名；若文件被阅读器占用（写失败），降级到新文件名
     for target in (OUT, OUT_FALLBACK):
         try:
+            before = os.path.getmtime(target) if os.path.exists(target) else 0
             result = subprocess.run(
                 [edge, "--headless", "--disable-gpu", "--no-pdf-header-footer",
                  f"--print-to-pdf={target}", f"file:///{HTML.replace(os.sep, '/')}"],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=120,
             )
-            if os.path.exists(target) and os.path.getsize(target) > 100_000:
+            after = os.path.getmtime(target) if os.path.exists(target) else 0
+            # 以 mtime 前进为准（Edge 写失败时旧文件仍存在，size 判断会误报）
+            if (result.returncode == 0 and after > before
+                    and os.path.getsize(target) > 100_000):
                 print(f"已生成: {target}（{os.path.getsize(target)//1024} KB）")
                 return
         except (OSError, subprocess.TimeoutExpired):

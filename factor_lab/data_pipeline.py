@@ -35,7 +35,7 @@ A_SHARE_RAW_PATH = os.path.join(DATA_DIR, "ashare_raw.csv")
 # 沪深300 指数日线（策略模块的基准，单独文件）
 INDEX_PATH = os.path.join(DATA_DIR, "hs300_index.csv")
 
-# 行业映射（全 A 池中性化用）：code → 申万一级行业
+# 行业映射（全 A 池中性化用）：code → 证监会行业分类
 INDUSTRY_PATH = os.path.join(DATA_DIR, "ashare_industry.csv")
 
 POOLS = {"hs300": RAW_PATH, "ashare": A_SHARE_RAW_PATH}
@@ -171,7 +171,7 @@ def load_raw(pool: str = "hs300") -> pd.DataFrame:
 
 
 def load_industry() -> pd.Series:
-    """行业映射：code → 申万一级行业（pd.Series，全 A 池中性化用）。"""
+    """行业映射：code → 证监会行业分类（pd.Series，全 A 池中性化用）。"""
     if not os.path.exists(INDUSTRY_PATH):
         raise FileNotFoundError(
             "行业映射表不存在，请运行: PYTHONIOENCODING=utf-8 "

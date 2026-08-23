@@ -48,7 +48,7 @@ def logout_timeout(timeout: float = 10.0):
 
 
 def get_industry_map() -> dict[str, str]:
-    """申万一级行业映射：code → 行业名（带超时保护）。"""
+    """证监会行业分类映射：code → 行业名（带超时保护）。"""
     mapping = {}
     rs = bs.query_stock_industry()
     while rs.next():

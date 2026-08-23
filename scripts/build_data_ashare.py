@@ -22,6 +22,10 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from baostock_proxy import install_proxy  # noqa: E402
+
+install_proxy()  # 设置 BAOSTOCK_PROXY 时：经代理换出口 IP，绕开 10001011 黑名单
+
 import baostock as bs  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,13 +64,18 @@ def get_all_stocks() -> list[str]:
 
 
 def get_industry_map() -> dict[str, str]:
-    """申万一级行业映射：code → 行业名（中性化用）。前提：调用方已 bs.login()。"""
+    """证监会行业分类映射：code → 行业名（中性化用）。前提：调用方已 bs.login()。
+
+    注意 baostock 返回列顺序是 updateDate, code, code_name, industry,
+    industryClassification——code 在 r[1]、行业名在 r[3]。曾误取 r[0]/r[2]
+    （日期/股票名）导致映射恒为空（"行业映射 0 只"）。
+    """
     mapping = {}
     rs = bs.query_stock_industry()
     while rs.next():
-        r = rs.get_row_data()  # code, code_name, industry, industryClassification
-        if r and r[0] and r[0].startswith(("sh.6", "sz.0", "sz.3")):
-            mapping[r[0]] = r[2]
+        r = rs.get_row_data()
+        if len(r) >= 4 and r[1] and r[1].startswith(("sh.6", "sz.0", "sz.3")):
+            mapping[r[1]] = r[3]
     return mapping
 
 

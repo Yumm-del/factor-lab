@@ -2,9 +2,13 @@
 """
 项目书 PDF 生成器（一条命令出 PDF）
 ====================================
-目的：build_proposal_html.py 生成 HTML 后，用系统自带 Edge 无头模式
-      直接打印成 PDF——与浏览器 Ctrl+P 渲染一致（@page A4、背景色、
+目的：build_proposal_html.py 生成 HTML 后，用 Edge CDP（Page.printToPDF）
+      打印成 PDF——与浏览器 Ctrl+P 渲染一致（@page A4、背景色、
       封面 16:9 图、图表分页），无需手动打印。
+
+为什么不用 --print-to-pdf CLI：Edge 151 起该参数返回 0 但不产出文件
+（2026-08-23 实测，最小 HTML 同样失败）；CDP 路径实测稳定，故委托
+print_pdf_cdp.py 完成打印。
 
 用法：PYTHONIOENCODING=utf-8 python scripts/build_pdf.py
       → docs/proposal.pdf（新文件，不覆盖被占用的旧文件）
@@ -22,18 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HTML = os.path.join(ROOT, "docs", "proposal.html")
 OUT = os.path.join(ROOT, "docs", "proposal.pdf")
 OUT_FALLBACK = os.path.join(ROOT, "docs", "proposal_new.pdf")
-
-EDGE_CANDIDATES = [
-    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-]
-
-
-def find_edge() -> str:
-    for p in EDGE_CANDIDATES:
-        if os.path.exists(p):
-            return p
-    raise SystemExit("未找到 Edge，请手动打开 HTML 打印 PDF")
+PRINT_CDP = os.path.join(ROOT, "scripts", "print_pdf_cdp.py")
 
 
 def main() -> None:
@@ -45,20 +38,17 @@ def main() -> None:
         raise SystemExit(f"生成 HTML 失败：{r.stderr[-300:]}")
     if not os.path.exists(HTML):
         raise SystemExit("缺少 docs/proposal.html，先跑 build_proposal_html.py")
-    edge = find_edge()
 
     # 先试正式名；若文件被阅读器占用（写失败），降级到新文件名
     for target in (OUT, OUT_FALLBACK):
         try:
             before = os.path.getmtime(target) if os.path.exists(target) else 0
             result = subprocess.run(
-                [edge, "--headless", "--disable-gpu", "--no-pdf-header-footer",
-                 f"--print-to-pdf={target}", f"file:///{HTML.replace(os.sep, '/')}"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=120,
+                [sys.executable, PRINT_CDP, target], capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=180,
             )
             after = os.path.getmtime(target) if os.path.exists(target) else 0
-            # 以 mtime 前进为准（Edge 写失败时旧文件仍存在，size 判断会误报）
+            # 以 mtime 前进为准（打印失败时旧文件仍存在，size 判断会误报）
             if (result.returncode == 0 and after > before
                     and os.path.getsize(target) > 100_000):
                 print(f"已生成: {target}（{os.path.getsize(target)//1024} KB）")

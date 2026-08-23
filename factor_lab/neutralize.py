@@ -99,9 +99,12 @@ def neutralize(factor: pd.DataFrame,
             ids = ind_id.reindex(valid[valid].index).values
             n_ind = len(industries)
             dummies = np.zeros((len(ids), n_ind))
+            # 注意：reindex 后若有股票缺行业映射，整个 ids 会升级为 float64
+            # （NaN 混入），有效编号也变成 3.0 这种 float——NumPy 不接受 float 索引，
+            # 必须显式 int()；NaN 会被 j >= 0 判 False 自然跳过。
             for i, j in enumerate(ids):
                 if j >= 0:
-                    dummies[i, j] = 1.0
+                    dummies[i, int(j)] = 1.0
             design.append(dummies)
         if log_size is not None:
             sz = log_size.loc[date, valid[valid].index].values.astype(float)

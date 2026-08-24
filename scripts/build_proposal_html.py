@@ -116,11 +116,18 @@ hr { border: none; border-top: 1pt solid var(--line); margin: 12pt 0; }
 .toc ul ul { padding-left: 14pt; }
 .toc li { margin: 0.25pt 0; }
 .toc a { color: var(--ink); text-decoration: none; line-height: 1.4; }
-/* 目录 35+ 条必须压进 1 页：一级 1.5pt + 二级 0.25pt + 二级 8.5pt 字号
-   实测刚好放下全部 36 条（宽松间距会溢出到第 2 页，正文整体 +1 页） */
-.toc > ul > li { margin: 1.5pt 0; }
-.toc > ul > li > a { font-weight: 700; color: var(--strong); font-size: 11.5pt; }
-.toc > ul ul a { font-weight: 400; color: var(--muted); font-size: 8.5pt; }
+/* 目录 39 条必须压进 1 页。踩坑记录（2026-08-25）：
+   a 上的 font-size/line-height 对 flex 容器 li 无效——li 的行盒由
+   li 继承的 body 字号/行距决定（body 10.5pt/1.9 → 行盒 18~20pt，
+   39 条必然溢出到第 2 页）。必须把字号/行距设到 li 本身：
+   二级 li 8pt/1.25（行盒 10pt）、一级 li 11pt/1.25（行盒 13.8pt），
+   39 条总高 ≈550pt < 内容区 ≈750pt，单页放下。
+   页码回填后条目不换行，两遍构建仍收敛 */
+.toc > ul > li { margin: 0.7pt 0; font-size: 11pt; line-height: 1.25; }
+.toc > ul > li > a { font-weight: 700; color: var(--strong); font-size: 11pt; }
+.toc > ul ul { margin: 0; }
+.toc > ul ul li { margin: 0.1pt 0; font-size: 8pt; line-height: 1.25; }
+.toc > ul ul a { font-weight: 400; color: var(--muted); font-size: 8pt; }
 /* 页码：条目右对齐（flex 撑开，页码贴右侧）。
    注意 flex-wrap：嵌套 ul（h2 子列表）width:100% 若不换行会压缩
    一级标题的 a 导致断行（实测「四、技术方|案」），wrap 后 a+页码
@@ -348,7 +355,7 @@ def main() -> None:
 </head>
 <body>
 {build_cover()}
-<div class="toc"><h2 class="toc-title">目 录</h2>
+<div class="toc-shell"><h2 class="toc-title">目 录</h2>
 {toc_html}
 </div>
 {html_body}

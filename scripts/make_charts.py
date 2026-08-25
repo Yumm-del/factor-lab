@@ -236,23 +236,22 @@ def chart_tam() -> None:
 def chart_pricing() -> None:
     """图（8.4）：研究工具年费锚点对比（对数刻度横向条形）。
 
-    竞品年费（Wind 39800 / 聚宽 SVIP 2799 / VIP 999）为市场锚点
-    （2026-08 核实，来源同 8.4 节）；本项目两档为拟定定价，朱红
-    高亮。x 轴对数刻度——Wind 与本项目差 80 倍，线性刻度下
-    499/999 会被压成看不见的细条。
+    只画市场锚点（Wind 39800 / 聚宽 SVIP 2799 / VIP 999，2026-08
+    核实，来源同 8.4 节）——论证「研究工具年费」的付费意愿已被
+    市场验证。不画本项目拟定价格：定价由落地阶段按市场反馈验证，
+    方案书不预设具体费用。
+    x 轴对数刻度——Wind 与个人档差 40 倍，线性刻度下
+    999 会被压成看不见的细条。
     """
-    items = [("Wind 单终端", 39800, False),
-             ("聚宽 SVIP（机构）", 2799, False),
-             ("聚宽 VIP（个人）", 999, False),
-             ("本项目 · 批量因子扫描", 999, True),
-             ("本项目 · 云端因子库订阅", 499, True)]
+    items = [("Wind 单终端", 39800),
+             ("聚宽 SVIP（机构）", 2799),
+             ("聚宽 VIP（个人）", 999)]
     names = [i[0] for i in items]
     vals = [i[1] for i in items]
-    colors = [RED if ai else GRAY for _, _, ai in items]
 
-    fig, ax = plt.subplots(figsize=(FIG_W, 3.9))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.3))
     y = np.arange(len(items))
-    bars = ax.barh(y, vals, 0.58, color=colors, alpha=0.92)
+    ax.barh(y, vals, 0.58, color=GRAY, alpha=0.92)
     for yi, v in zip(y, vals):
         ax.text(v * 1.06, yi, f"{v:,} 元/年", va="center", fontsize=9.5,
                 color=INK, fontweight="bold")
@@ -263,12 +262,8 @@ def chart_pricing() -> None:
     ax.set_yticks(y)
     ax.set_yticklabels(names, fontsize=10)
     ax.set_xlabel("年费（元，对数刻度）", fontsize=10.5, color=MUTED)
-    ax.set_title("研究工具年费锚点对比（2026-08 核实；本项目为拟定定价）",
+    ax.set_title("研究工具年费锚点对比（市场锚点，2026-08 核实）",
                  fontsize=12.5, color=INK, pad=10)
-    from matplotlib.patches import Patch
-    ax.legend(handles=[Patch(color=RED, label="本项目（拟定）"),
-                       Patch(color=GRAY, label="市场锚点（聚宽/Wind）")],
-              fontsize=9.5, frameon=False, loc="lower right")
     style_ax(ax, axis="x")
     save(fig, "pricing_bar.png")
 
@@ -533,6 +528,114 @@ def chart_arch() -> None:
     save(fig, "arch.png")
 
 
+def chart_agent_loop() -> None:
+    """图（04 章，图 4-2）：受限智能体（Constrained Agent）工作闭环示意。
+
+    与 arch.png 同风格（matplotlib 手绘、axes-fraction 坐标、token
+    同源配色），把 4.7 节用文字定义的「感知 → 决策 → 行动 → 反思」
+    闭环画出来——评委一眼看懂 Agent 主题的核心机制：AI 负责「想」、
+    体检负责「判」、人负责「审」。纯结构示意（无数据），不进入复核管线。
+    """
+    fig, ax = plt.subplots(figsize=(FIG_W, 4.6))
+    ax.axis("off")
+    DARK = "#1e3a8a"; MID = "#3b82f6"; LIGHT = "#dbeafe"
+    RED_AX = "#b91c1c"; RED_LIGHT = "#fee2e2"
+    DATA_C = "#64748b"; DATA_LIGHT = "#e2e8f0"
+
+    def box(x: float, y: float, w: float, h: float, title: str,
+            lines: list[str]) -> None:
+        """画一个步骤框：深蓝块 + 白字步骤名 + 两行小字说明。
+        参数（axes fraction 坐标）：x/y 为左下角，w/h 为宽高。
+        """
+        ax.add_patch(Rectangle((x, y), w, h, transform=ax.transAxes,
+                               facecolor=DARK, edgecolor="none", alpha=0.92))
+        ax.text(x + w / 2, y + h - 0.028, title, transform=ax.transAxes,
+                ha="center", va="top", color="white", fontsize=11.5,
+                fontweight="bold")
+        for i, ln in enumerate(lines):
+            ax.text(x + w / 2, y + 0.035 + (len(lines) - i - 1) * 0.03,
+                    ln, transform=ax.transAxes, ha="center", va="bottom",
+                    color="#e2e8f0", fontsize=8.3)
+
+    def arrow(x1: float, y1: float, x2: float, y2: float, *,
+              color: str = DARK, ls: str = "-", rad: float = 0.0) -> None:
+        """两点间箭头（axes fraction）；rad 非 0 时画弧线（反思回喂用）。"""
+        ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
+                    xycoords="axes fraction",
+                    arrowprops=dict(arrowstyle="->", color=color, lw=1.6,
+                                    linestyle=ls,
+                                    connectionstyle=f"arc3,rad={rad}"))
+
+    # —— 顶部安全边界条（结构安全是 Agent 的行动约束）——
+    ax.add_patch(Rectangle((0.03, 0.87), 0.94, 0.08, transform=ax.transAxes,
+                           facecolor=RED_LIGHT, edgecolor=RED_AX, lw=1.0))
+    ax.text(0.5, 0.91, "结构安全：18 个白名单算子 · 表达式树解析 · 无自由代码执行",
+            transform=ax.transAxes, ha="center", va="center",
+            color=RED_AX, fontsize=10.5, fontweight="bold")
+
+    # —— 用户输入（左侧虚线框，不进闭环）——
+    ax.add_patch(Rectangle((0.03, 0.53), 0.16, 0.20, transform=ax.transAxes,
+                           facecolor="white", edgecolor=DATA_C, lw=1.2,
+                           linestyle="--"))
+    ax.text(0.11, 0.645, "一句话想法\n（自然语言）", transform=ax.transAxes,
+            ha="center", va="center", color="#334155", fontsize=9)
+
+    # —— 闭环四步（横向排开）——
+    box(0.25, 0.50, 0.17, 0.26, "感知",
+        ["自然语言想法", "+ 体检诊断数值"])
+    box(0.44, 0.50, 0.17, 0.26, "决策",
+        ["依据诊断选择", "生成 / 修改表达式"])
+    box(0.63, 0.50, 0.17, 0.26, "行动",
+        ["受限 DSL 输出", "结构安全即边界"])
+    box(0.82, 0.50, 0.17, 0.26, "反思",
+        ["失败证据回喂", "自动改进（最多 2 轮）"])
+
+    # —— 主链路箭头（想法→感知→决策→行动→反思）——
+    arrow(0.19, 0.63, 0.25, 0.63, color=DATA_C, ls="--")   # 想法 → 感知
+    arrow(0.42, 0.63, 0.44, 0.63)                          # 感知 → 决策
+    arrow(0.61, 0.63, 0.63, 0.63)                          # 决策 → 行动
+    arrow(0.80, 0.63, 0.82, 0.63)                          # 行动 → 反思
+
+    # —— 体检（判官）——
+    arrow(0.715, 0.50, 0.715, 0.44)                        # 行动 → 体检
+    ax.text(0.735, 0.455, "受限表达式", transform=ax.transAxes,
+            ha="left", va="center", fontsize=8.3, color="#475569")
+    ax.add_patch(Rectangle((0.28, 0.20), 0.70, 0.24, transform=ax.transAxes,
+                           facecolor=DATA_LIGHT, edgecolor=DATA_C, lw=1.2))
+    ax.text(0.35, 0.385, "标准体检", transform=ax.transAxes, ha="left",
+            va="top", color="#1f2937", fontsize=10.5, fontweight="bold")
+    ax.text(0.35, 0.335, "IC / RankIC · 分层单调性 · 换手率 · IC 衰减",
+            transform=ax.transAxes, ha="left", va="top", fontsize=9,
+            color="#334155")
+    ax.text(0.35, 0.285, "综合评分（0–100，<50 为淘汰档）",
+            transform=ax.transAxes, ha="left", va="top", fontsize=9,
+            color="#334155")
+
+    # —— 达标 → 策略验证（成功路径）——
+    arrow(0.60, 0.20, 0.60, 0.15)                          # 体检 → 策略
+    ax.text(0.61, 0.165, "达标", transform=ax.transAxes, ha="left",
+            va="center", fontsize=8.3, color="#334155")
+    ax.add_patch(Rectangle((0.42, 0.05), 0.56, 0.10, transform=ax.transAxes,
+                           facecolor=MID, edgecolor="none", alpha=0.92))
+    ax.text(0.70, 0.10, "策略验证：Top-30 周频 · 扣双边成本 · 对比基准",
+            transform=ax.transAxes, ha="center", va="center", color="white",
+            fontsize=9.5, fontweight="bold")
+
+    # —— 反思回喂（失败路径，红色虚线弧）——
+    arrow(0.28, 0.28, 0.33, 0.50, color=RED_AX, ls="--", rad=-0.45)
+    ax.text(0.06, 0.30, "评分 <50 自动触发反思：失败诊断（IC 强度 / 换手率 /\n单调性 / 衰减速度）回喂 LLM，迭代后重新体检，最多 2 轮",
+            transform=ax.transAxes, ha="left", va="center", fontsize=8.3,
+            color=RED_AX)
+    # 右侧小标签：人的角色（AI 想 / 体检判 / 人审）
+    ax.text(0.95, 0.13, "人负责「审」：每一步输出可点开查看、可手动干预",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8.3,
+            color="#475569")
+
+    ax.set_title("受限智能体（Constrained Agent）工作闭环：AI 负责「想」· 体检负责「判」· 人负责「审」",
+                 fontsize=12.5, color=INK, pad=10)
+    save(fig, "agent_loop.png")
+
+
 def verify_numbers(panel: dict, idx: pd.Series) -> None:
     """复核项目书 6.3 关键数字：20 日动量、AI 因子——不一致即警告。"""
     close = panel["close"]
@@ -561,6 +664,7 @@ def main() -> None:
     chart_dual_pool()          # 6.4 双池对照（读验证 JSON，不重算）
     chart_score_compare()      # 6.5 评分敏感性（读验证 JSON）
     chart_arch()               # 04 章系统架构图
+    chart_agent_loop()         # 04 章受限智能体闭环（图 4-2）
     chart_tam()                # 8.1 TAM 估算漏斗（结构示意）
     chart_pricing()            # 8.4 定价锚点对比（对数刻度）
     chart_oos(panel_full, idx) # 6.6 OOS 首周跟踪（完整 panel）

@@ -1,5 +1,10 @@
 # 数据缓存（可从 baostock 重新下载，不入库）
+# 例外：沪深300 核心数据与离线预置示例必须入库——
+# Streamlit Cloud 云端部署依赖它们（全 A 池 434MB 保持不入库）
 data/
+!data/hs300_raw.csv
+!data/hs300_index.csv
+!data/presets.json
 
 # 密钥
 .env

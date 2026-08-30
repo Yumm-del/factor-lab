@@ -23,5 +23,6 @@ venv/
 # 构建产物与旧版 PDF（proposal.md 才是源文件）
 docs/*.html
 docs/proposal.pdf
+docs/proposal_new.pdf
 docs/proposal_v*.pdf
 docs/cover_*.png

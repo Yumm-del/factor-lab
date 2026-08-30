@@ -236,7 +236,8 @@ def _attach_open_cache(df: pd.DataFrame, pool: str) -> pd.DataFrame:
             "请先运行: PYTHONIOENCODING=utf-8 python scripts/backfill_open.py"
             "（只补 open 一列，断点续传，不用重下全 A 主数据）"
         )
-    op = pd.read_csv(OPEN_CACHE_PATH, usecols=["code", "date", "open"])
+    # 注意：补数脚本用原生写入（无表头），必须 header=None + names 读取
+    op = pd.read_csv(OPEN_CACHE_PATH, header=None, names=["code", "date", "open"])
     op["open"] = pd.to_numeric(op["open"], errors="coerce")
     merged = df.merge(op, on=["code", "date"], how="left")
     missing = merged["open"].isna().mean()

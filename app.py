@@ -28,6 +28,7 @@ from factor_lab import (  # noqa: E402
     alpha101_library, data_pipeline, dsdl, factor_engine, llm_factor,
     neutralize, strategy, validation,
 )
+from factor_lab.factor_pool import get_pool  # AlphaPool 式因子池查重
 
 st.set_page_config(page_title="因子实验室 · AI Factor Lab", layout="wide", page_icon="🧪")
 
@@ -301,6 +302,39 @@ def _local_report(formula: str, diag: dict) -> str:
 # ============================================================
 # Tab 1：AI 因子工场（核心卖点）
 # ============================================================
+
+def _dedup_hint_ui(dup: dict | None):
+    """因子池查重结果 → 工作台提示（重复警告 / 无重复说明）。
+
+    dup 结构来自 factor_pool.FactorPool.check()：
+    {"hit": 超阈值的最相似因子 dict|None, "top": 最相似 k 个}。
+    """
+    if not dup:
+        return
+    hit = dup.get("hit")
+    if hit:
+        st.warning(
+            f"⚠️ **与已有因子重复**：本因子与「{hit['name']}」（{hit['category']}类）"
+            f"逐日截面相关 **{hit['corr']:.4f}**（>0.99 判定重复）。\n\n"
+            f"反思迭代已要求 AI 改变核心逻辑（换算子组合/换数据字段/换时间窗口），"
+            f"禁止等价变形——重复因子对因子库没有增量贡献。"
+        )
+    elif dup.get("top"):
+        t = dup["top"][0]
+        st.caption(
+            f"✅ 与因子库现有因子无重复（最相似为「{t['name']}」，"
+            f"相关 {t['corr']:.4f}，未超 0.99 阈值）"
+        )
+
+
+def _pool_discovered(expr: dict, formula: str):
+    """会话已挖因子加入因子池（幂等）——让池随会话生长，后续查重可识别。"""
+    key = f"discovered_{hash(formula) & 0xFFFF:04x}"
+    pool = get_pool()
+    if not pool.contains(key):
+        pool.add_discovered(key, f"已挖: {formula[:28]}", expr)
+
+
 def render_ai_factory():
     st.title("🧪 AI 因子工场")
     st.markdown(
@@ -344,6 +378,10 @@ def render_ai_factory():
         try:
             with st.spinner("AI 正在生成因子表达式…"):
                 result = llm_factor.generate_factor(idea, panel, panel["close"])
+
+            # 因子池查重提示（首轮生成会触发全池 91 因子懒计算缓存，稍等片刻）
+            _dedup_hint_ui(result.get("dup"))
+            _pool_discovered(result["expr"], result["formula"])
 
             if style != "none":
                 # 中性化开启：按当前设置重算体检（报告用本地模板，保证数字与文字一致）
@@ -390,6 +428,8 @@ def render_ai_factory():
                         )
                 else:
                     report = _local_report(formula, diag)
+                # 手动编辑的因子也入池（幂等）——评委亲测的因子同样参与后续查重
+                _pool_discovered(expr, formula)
                 st.session_state["last_result"] = {
                     "idea": "手动编辑",
                     "rationale": "手动输入的表达式",
@@ -406,6 +446,7 @@ def render_ai_factory():
     result = st.session_state.get("last_result")
     if result:
         st.divider()
+        _dedup_hint_ui(result.get("dup"))  # 展示时再次给出查重提示（preset 无 dup 字段，安全跳过）
         st.markdown(f"### 📝 因子定义：`{result['formula']}`")
         col1, col2 = st.columns(2)
         with col1:

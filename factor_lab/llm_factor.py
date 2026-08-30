@@ -28,9 +28,11 @@ from openai import OpenAI
 # 兼容直接运行与包导入
 try:
     from . import dsdl, validation
+    from .factor_pool import get_pool  # AlphaPool 式因子池查重（防 LLM 反复生成相似因子）
 except ImportError:
     import dsdl
     import validation
+    from factor_pool import get_pool
 
 # ——— 项目根目录（.env 所在位置） ———
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -204,12 +206,32 @@ REFLECT_SYSTEM = (
     "   - 换手过高 → 加长窗口均值（平滑信号）或降低对短窗的依赖\n"
     "   - 分层单调性破裂 → 检查是否过度依赖单一字段，增加逻辑组合\n"
     "   - 衰减过快 → 用更长周期的 ts_returns 或均值结构\n"
-    "5. 如果认为当前方向不可救，可以换一个同主题的思路（但必须仍是量价/基本面逻辑）"
+    "5. 如果认为当前方向不可救，可以换一个同主题的思路（但必须仍是量价/基本面逻辑）\n"
+    "6. 若反馈里有「相似因子警告」：你的上版表达式与因子库已有因子数值高度相似，"
+    "说明你绕圈子了——不要做等价变形（换写法/换参数），必须改变核心逻辑（换算子组合、"
+    "换数据字段、换时间窗口），保证新因子对因子库有增量贡献"
 )
 
 
-def build_reflect_prompt(idea: str, formula: str, rationale: str, diag: dict) -> str:
-    """构造反思 prompt：上版因子 + 体检失败数据 → 要求输出修正表达式。"""
+def build_reflect_prompt(idea: str, formula: str, rationale: str, diag: dict,
+                         dup_hint: dict | None = None) -> str:
+    """构造反思 prompt：上版因子 + 体检失败数据（+ 查重警告）→ 要求输出修正表达式。
+
+    参数：
+        dup_hint — 查重结果 dict（{"name","category","corr"}），
+                   None 表示未与已有因子重复。重复时此警告优先于体检反馈——
+                   重复因子对因子库没有增量，换逻辑比修参数更重要。
+    """
+    dup_block = ""
+    if dup_hint is not None:
+        dup_block = f"""
+⚠️ 相似因子警告：你上一版因子与因子库已有因子「{dup_hint['name']}」
+（{dup_hint['category']}类）逐日截面相关度高达 {dup_hint['corr']:.4f}（>0.99 判定重复）。
+它与已有因子在数值上等价——即使体检高分，对因子库也没有增量贡献。
+请先解决重复：换数据字段 / 换算子组合 / 换时间窗口，改变核心逻辑，
+不要做等价变形（如把 ts_mean(x,20) 改成 ts_sum(x,20)/20）。
+
+"""
     return f"""{GENERATION_EXAMPLES}
 
 以下是完整的算子说明书：
@@ -219,7 +241,7 @@ def build_reflect_prompt(idea: str, formula: str, rationale: str, diag: dict) ->
 
 你上一版因子：{formula}
 上版因子逻辑：{rationale}
-
+{dup_block}
 体检结果（未达标）：
 {diagnosis_to_text(diag)}
 
@@ -279,27 +301,36 @@ def build_interpret_prompt(formula: str, rationale: str, diag: dict) -> str:
 
 
 def generate_factor(idea: str, panel: dict, close: pd.DataFrame,
-                    max_reflect_rounds: int = MAX_REFLECT_ROUNDS) -> dict:
+                    max_reflect_rounds: int = MAX_REFLECT_ROUNDS,
+                    dedup: bool = True) -> dict:
     """
-    端到端：自然语言想法 → 因子表达式 → 体检 → 反思迭代 → AI 解读。
+    端到端：自然语言想法 → 因子表达式 → 体检 →（查重）→ 反思迭代 → AI 解读。
 
     参数：
         idea  — 用户用自然语言描述的因子想法
         panel — load_panel() 数据面板（含 close 等）
         close — 收盘价面板（验证模块用）
         max_reflect_rounds — 体检不达标时最多自动反思轮数（默认 2，共 3 次生成）
+        dedup — 是否对每轮生成做因子池查重（AlphaPool 式，默认开）：
+                与内置 91 因子（+ 会话内已挖因子）逐日截面相关 >0.99 时，
+                把「与已有因子 X 高度相似」作为反思反馈优先喂给 LLM，
+                要求改变核心逻辑而非等价变形
     返回：
         dict：{idea, rationale, expr, expr_str, formula, tree, diag, report,
-               rounds, n_rounds}
-              rounds — 每轮迭代记录（[{round, formula, score, verdict}]，
+               rounds, n_rounds, dup}
+              rounds — 每轮迭代记录（[{round, formula, score, verdict, dup}]，
                        1 轮 = 无反思；>1 轮 = 触发了反思闭环）
               n_rounds — 实际轮数（演示/报告中展示"智能体迭代了 N 次"）
+              dup — 最终版因子的查重结果 {"hit": {...}|None, "top": [...]}，
+                    供 UI 展示"与已有因子的相似度"
     """
     # 首轮：从自然语言想法生成初始表达式
     system, user = build_generation_prompt(idea)
     result = _llm_json(system, user)
 
+    pool = get_pool() if dedup else None
     rounds: list[dict] = []
+    last_dup: dict | None = None
     for round_i in range(1, max_reflect_rounds + 2):  # 1 + 反思轮数（最多 3 次生成）
         rationale = result.get("rationale", "")
         expr_dict = result.get("expr")
@@ -315,22 +346,33 @@ def generate_factor(idea: str, panel: dict, close: pd.DataFrame,
         factor_panel = dsdl.evaluate(expr, panel)
         diag = validation.full_diagnosis(factor_panel, close)
 
+        # 因子池查重：与已有因子逐日截面相关（首轮会触发全池 91 因子
+        # 懒计算缓存，约 30-60 秒；之后每次查重秒回）
+        dup = None
+        if pool is not None:
+            dup = pool.check(factor_panel, panel)
+            last_dup = dup
+            if dup["hit"] is not None:
+                diag["dup"] = dup["hit"]  # 体检单附注：报告如实说明"与已有因子重复"
+
         rounds.append({
             "round": round_i,
             "formula": formula,
             "score": diag["score"],
             "verdict": diag["verdict"]["label"],
+            "dup": dup["hit"] if dup else None,
         })
 
         # 达标（>=50）或已达最大轮数 → 停止迭代
         if diag["score"] >= REFLECT_THRESHOLD or round_i > max_reflect_rounds:
             break
 
-        # 不达标 → 反思闭环：把失败诊断回喂 LLM，修改表达式后重新体检。
+        # 反思闭环：把失败诊断（+ 查重警告，重复时优先）回喂 LLM。
         # 这轮生成是"有依据的修正"而非"重试"——体检数据就是修改的依据。
         result = _llm_json(
             REFLECT_SYSTEM,
-            build_reflect_prompt(idea, formula, rationale, diag),
+            build_reflect_prompt(idea, formula, rationale, diag,
+                                 dup_hint=dup["hit"] if dup else None),
         )
 
     # AI 解读（Markdown 文本，不是 JSON）——只解读最终版因子
@@ -350,6 +392,7 @@ def generate_factor(idea: str, panel: dict, close: pd.DataFrame,
         "report": report_text,
         "rounds": rounds,
         "n_rounds": len(rounds),
+        "dup": last_dup,
     }
 
 

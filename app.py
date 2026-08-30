@@ -216,8 +216,27 @@ def fig_layer_bar(layers_meta: dict) -> go.Figure:
 # ============================================================
 # 体检结果展示（两个 Tab 共用）
 # ============================================================
-def render_diagnosis(diag: dict):
-    """把体检单渲染成卡片 + 图表 + 指标解读。"""
+@st.cache_data(show_spinner=False)
+def walk_forward_cached(expr_json: str, pool: str, style: str, n_splits: int = 4) -> dict:
+    """时间分割稳健性（walk-forward 4 折，缓存：同表达式×池×中性化只算一次）。
+
+    回答「因子能力是否随时间漂移」——全样本 IC 好看不代表每段行情都有效，
+    分段时间稳健性是行业标准检验（新模块 factor_lab/robust.py）。"""
+    from factor_lab.robust import walk_forward
+    panel = data_pipeline.load_panel(pool)
+    expr = dsdl.parse_factor(expr_json)
+    fac = dsdl.evaluate(expr, panel)
+    if style != "none":
+        fac = neutralize_factor(fac, panel, style)
+    return walk_forward(fac, panel["close"], n_splits=n_splits)
+
+
+def render_diagnosis(diag: dict, expr_json: str | None = None):
+    """把体检单渲染成卡片 + 图表 + 指标解读。
+
+    参数：
+        diag      — 体检单（ic_summary/layers/decay/lifecycle/score/verdict）
+        expr_json — 表达式树 JSON（非 None 时额外渲染「时间稳健性」段）"""
     s = diag["ic_summary"]
     lay = diag["layers"]
     verdict = diag["verdict"]
@@ -263,6 +282,41 @@ def render_diagnosis(diag: dict):
     st.plotly_chart(fig_decay(diag["ic_decay"]), width="stretch")
     if "lifecycle" in diag and len(diag["lifecycle"].dropna()) > 0:
         st.plotly_chart(fig_lifecycle(diag["lifecycle"]), width="stretch")
+
+    # —— 时间稳健性（walk-forward 4 折，阶段 1 新增）——
+    if expr_json:
+        w = walk_forward_cached(expr_json, pool, style)
+        stab = w["stability"]
+        lo, hi = stab["ic_mean_range"]
+        max_abs = max(abs(lo), abs(hi))
+        if stab["drift_risk"] and max_abs < 0.01:
+            # 各折 IC 都在 0 附近抖动 → 因子「弱而噪声」，不是能力漂移
+            verdict_txt = (f"⚠️ **能力弱且不稳定**：{stab['n_folds']} 折 IC 均在 "
+                           f"±0.01 内抖动（{lo:+.4f} ~ {hi:+.4f}），"
+                           "因子本身没有显著预测能力，全样本数字不可靠，不建议使用。")
+        elif stab["drift_risk"]:
+            verdict_txt = (f"⚠️ **能力随时间漂移**：{stab['n_folds']} 折 IC 跨度为 "
+                           f"{lo:+.4f} ~ {hi:+.4f}"
+                           f"（折间标准差 {stab['ic_std_across_folds']:.4f}），"
+                           f"{'不同方向' if not stab['all_positive'] else '强度变化大'}。"
+                           "全样本数字是各段平均，实盘需按最新一段重估。")
+        else:
+            verdict_txt = (f"✅ **四折同号、无漂移**：{stab['n_folds']} 折 IC 均在 "
+                           f"{'正' if lo > 0 else '负'}方向（{lo:+.4f} ~ {hi:+.4f}）。"
+                           "因子能力在样本期内平稳。")
+        with st.expander(f"⏱ 时间稳健性（walk-forward {stab['n_folds']} 折）", expanded=False):
+            st.markdown(verdict_txt)
+            cols = st.columns(stab["n_folds"])
+            for col, f in zip(cols, w["folds"]):
+                col.markdown(f"**折 {f['fold']}**  \n{f['start']} ~ {f['end']}")
+                col.metric("IC", f"{f['ic_mean']:+.4f}")
+                col.metric("IR", f"{f['ic_ir']:.2f}")
+                col.metric("多空年化", f"{f['spread_annual']:+.1%}")
+                col.caption(f"t = {f['ic_t']:+.2f} · 单调 {f['monotonic']:+.2f}")
+            st.caption(
+                "方法：样本按时间均分 4 折，每折独立算 IC/IR/多空年化——"
+                "检验因子能力是否随时间平稳（无拟合参数，语义为分段稳健性；"
+                "阶段 2 因子合成层将复用此接口做 train→test）。")
 
 
 # ============================================================
@@ -457,7 +511,7 @@ def render_ai_factory():
             st.markdown(result["report"])
 
         st.divider()
-        render_diagnosis(result["diag"])
+        render_diagnosis(result["diag"], result.get("expr_str"))
 
 
 # ============================================================
@@ -514,7 +568,7 @@ def render_classic_library():
         st.markdown(f"**DSL 表达式**：`{expr_str}`")
         st.code(dsdl.render_tree(expr), language="text")
         st.divider()
-        render_diagnosis(diag)
+        render_diagnosis(diag, json.dumps(expr, ensure_ascii=False))
 
 
 # ============================================================

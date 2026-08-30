@@ -74,10 +74,11 @@ body {
 
 /* ================= 章首色带（自动注入，见 decorate_chapters） ================= */
 h1 {
-  page-break-before: always;
+  /* 不强制分页：章与章自然衔接，避免每章结尾留大片空白（2026-08-30 用户反馈）；
+     章首与上文的间距由 margin-top 承担，目录后由 .toc 的 page-break-after 保证正文起新页 */
   background: var(--grad);
   color: #fff; font-size: 17pt; font-weight: 700;
-  margin: 0 0 14pt; padding: 22pt 20pt 18pt;
+  margin: 30pt 0 14pt; padding: 18pt 20pt 16pt;
   border-radius: 8pt;
   page-break-after: avoid;
 }
@@ -123,11 +124,11 @@ hr { border: none; border-top: 1pt solid var(--line); margin: 12pt 0; }
    二级 li 8pt/1.25（行盒 10pt）、一级 li 11pt/1.25（行盒 13.8pt），
    39 条总高 ≈550pt < 内容区 ≈750pt，单页放下。
    页码回填后条目不换行，两遍构建仍收敛 */
-.toc > ul > li { margin: 0.7pt 0; font-size: 11pt; line-height: 1.25; }
-.toc > ul > li > a { font-weight: 700; color: var(--strong); font-size: 11pt; }
+.toc > ul > li { margin: 1.1pt 0; font-size: 12.5pt; line-height: 1.3; }
+.toc > ul > li > a { font-weight: 700; color: var(--strong); font-size: 12.5pt; }
 .toc > ul ul { margin: 0; }
-.toc > ul ul li { margin: 0.1pt 0; font-size: 8pt; line-height: 1.25; }
-.toc > ul ul a { font-weight: 400; color: var(--muted); font-size: 8pt; }
+.toc > ul ul li { margin: 0.3pt 0; font-size: 9.5pt; line-height: 1.3; }
+.toc > ul ul a { font-weight: 400; color: var(--muted); font-size: 9.5pt; }
 /* 页码：条目右对齐（flex 撑开，页码贴右侧）。
    注意 flex-wrap：嵌套 ul（h2 子列表）width:100% 若不换行会压缩
    一级标题的 a 导致断行（实测「四、技术方|案」），wrap 后 a+页码
@@ -135,7 +136,7 @@ hr { border: none; border-top: 1pt solid var(--line); margin: 12pt 0; }
 .toc li { display: flex; flex-wrap: wrap; justify-content: space-between;
           align-items: baseline; }
 .toc li a { flex: 0 1 auto; }
-.toc li .tocpg { color: var(--muted); font-size: 9.5pt; margin-left: 8pt; }
+.toc li .tocpg { color: var(--muted); font-size: 10pt; margin-left: 8pt; }
 .toc li ul { flex-basis: 100%; }
 .toc li li { display: flex; flex-wrap: wrap; justify-content: space-between; }
 

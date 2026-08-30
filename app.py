@@ -25,7 +25,8 @@ import streamlit as st
 # 包导入（app.py 在项目根目录，factor_lab 是同级包）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from factor_lab import (  # noqa: E402
-    data_pipeline, dsdl, factor_engine, llm_factor, neutralize, strategy, validation,
+    alpha101_library, data_pipeline, dsdl, factor_engine, llm_factor,
+    neutralize, strategy, validation,
 )
 
 st.set_page_config(page_title="因子实验室 · AI Factor Lab", layout="wide", page_icon="🧪")
@@ -51,6 +52,19 @@ def diagnose_classic_cached(key: str, pool: str = "hs300", style: str = "none"):
     """经典因子体检（缓存：同一因子×池子×中性化只算一次）。"""
     panel = data_pipeline.load_panel(pool)
     expr = factor_engine.get_factor(key)["expr"]
+    fac = dsdl.evaluate(expr, panel)
+    fac = neutralize_factor(fac, panel, style)
+    return validation.full_diagnosis(fac, panel["close"])
+
+
+@st.cache_data(show_spinner="体检中…")
+def diagnose_expr_cached(expr_json: str, pool: str = "hs300", style: str = "none"):
+    """任意 DSL 表达式树（JSON 字符串）的体检——alpha101 移植因子复用此入口。
+
+    与 diagnose_classic_cached 同管线（体检指标/评分/方向完全一致），
+    只是表达式来源从内置因子库换成 JSON 树，保证 91 个因子同口径。"""
+    panel = data_pipeline.load_panel(pool)
+    expr = dsdl.parse_factor(expr_json)
     fac = dsdl.evaluate(expr, panel)
     fac = neutralize_factor(fac, panel, style)
     return validation.full_diagnosis(fac, panel["close"])
@@ -348,10 +362,13 @@ def render_ai_factory():
         if mode == "📝 人类可读公式":
             default_src = "rank(ts_mean(close, 5) / ts_mean(volume, 20))"
             src = st.text_input("公式", value=default_src,
-                                help="算子白名单：ts_returns / ts_mean / ts_std / ts_zscore / "
-                                     "ts_rank / ts_max / ts_min / ts_corr / delay / rank / "
-                                     "normalize / add / sub / mul / div / signed_power / log / "
-                                     "abs / neg / const，支持 + - * / 与括号")
+                                help="算子白名单（38 个）：时序 ts_returns/ts_mean/ts_std/"
+                                     "ts_zscore/ts_rank/ts_max/ts_min/delay/delta/ts_sum/"
+                                     "ts_product/ts_argmax/ts_argmin/decay_linear/ts_corr/"
+                                     "ts_cov · 截面 rank/normalize/scale · 一元 signed_power/"
+                                     "log/ln/abs/neg/sign · 二元 add/sub/mul/div/pow/min/max/"
+                                     "gt/lt/eq/and/or · 条件 cond；数据叶子 open/close/high/low/"
+                                     "volume/amount/vwap/turn/pe/pb；支持 + - * / 与括号")
         else:
             default_src = ('{"op": "rank", "args": [{"op": "div", "args": ['
                            '{"op": "ts_mean", "args": [{"op": "close"}], "param": 5}, '
@@ -408,27 +425,48 @@ def render_ai_factory():
 def render_classic_library():
     st.title("📚 经典因子库")
     st.markdown(
-        "> 内置 10 个 A 股实证研究中最稳健的经典因子（动量/反转/波动/流动性/价值/趋势），"
-        "全部用同一套 DSL 表达式表示——与 AI 因子走完全相同的体检流水线。\n"
+        "> 内置 **91 个因子**——10 个教科书经典因子（动量/反转/波动/流动性/价值/趋势）"
+        "+ 81 个 WorldQuant 101 公式移植（与公开参考实现逐日相关交叉验证通过，"
+        "27/27 双向验证全 >0.99）。全部用同一套 DSL 表达式表示，"
+        "与 AI 因子走完全相同的体检流水线。\n"
         "> **这既是基线对照，也是可信度证明**：工作台对「已知有效的因子」能给出正确判定。"
     )
 
-    factors = factor_engine.list_factors()
-    cat_map = {f["key"]: f for f in factors}
-    cats = ["动量", "反转", "波动", "流动性", "价值", "趋势"]
-    selected_cat = st.radio("因子类别", cats, horizontal=True)
-    in_cat = [f for f in factors if f["category"] == selected_cat]
-    labels = {f["key"]: f"{f['name']} —— {f['description']}" for f in in_cat}
-    key = st.selectbox("选择因子", list(labels.keys()),
-                       format_func=lambda k: labels[k])
-
-    meta = cat_map[key]
-    expr = factor_engine.get_factor(key)["expr"]
-    expr_str = dsdl.to_formula(expr)
+    src = st.radio("因子来源", ["教科书经典（10）", "WorldQuant 101 移植（81）"], horizontal=True)
+    if src.startswith("教科书"):
+        factors = factor_engine.list_factors()
+        cats = ["动量", "反转", "波动", "流动性", "价值", "趋势"]
+        selected_cat = st.radio("因子类别", cats, horizontal=True, key="classic_cat")
+        in_cat = [f for f in factors if f["category"] == selected_cat]
+        labels = {f["key"]: f"{f['name']} —— {f['description']}" for f in in_cat}
+        key = st.selectbox("选择因子", list(labels.keys()),
+                           format_func=lambda k: labels[k], key="classic_sel")
+        expr = factor_engine.get_factor(key)["expr"]
+        expr_str = dsdl.to_formula(expr)
+    else:
+        factors = alpha101_library.list_alpha101()
+        cats = sorted({f["category"] for f in factors})
+        selected_cat = st.radio("因子类别", cats, horizontal=True, key="wq101_cat")
+        kw = st.text_input("搜索（编号/名称/描述）", placeholder="如：007 或 量价",
+                           key="wq101_kw").strip()
+        in_cat = [f for f in factors if f["category"] == selected_cat]
+        if kw:
+            in_cat = [f for f in in_cat
+                      if kw in f["key"] or kw in f["name"] or kw in f["description"]]
+        labels = {f["key"]: f"#{f['key'][-3:]} {f['name']} —— {f['description']}"
+                  for f in in_cat}
+        key = st.selectbox("选择因子", list(labels.keys()),
+                           format_func=lambda k: labels[k], key="wq101_sel")
+        expr = alpha101_library.get_alpha101(key)["expr"]
+        expr_str = dsdl.to_formula(expr)
 
     if st.button("🔬 开始体检", type="primary"):
         with st.spinner("体检中…"):
-            st.session_state[f"diag_{key}"] = diagnose_classic_cached(key, pool, style)
+            if src.startswith("教科书"):
+                st.session_state[f"diag_{key}"] = diagnose_classic_cached(key, pool, style)
+            else:
+                st.session_state[f"diag_{key}"] = diagnose_expr_cached(
+                    json.dumps(expr, ensure_ascii=False), pool, style)
 
     diag = st.session_state.get(f"diag_{key}")
     if diag:
@@ -449,7 +487,7 @@ def render_compare():
         "如果 AI 因子跑赢了经典因子，就是全场最有力的演示瞬间。"
     )
 
-    # 收集所有可对比因子：经典因子（缓存体检）+ AI 因子（会话内生成过的）
+    # 收集所有可对比因子：经典因子（缓存体检）+ WQ101 移植（勾选）+ AI 因子（会话内生成）
     rows = []
     with st.spinner("体检全部经典因子（首次约 10 秒，之后秒开）…"):
         for f in factor_engine.list_factors():
@@ -457,6 +495,33 @@ def render_compare():
             rows.append({
                 "因子": f["name"], "类型": "经典",
                 "expr_str": json.dumps(factor_engine.get_factor(f["key"])["expr"],
+                                       ensure_ascii=False),
+                "IC均值": d["ic_summary"]["ic_mean"],
+                "IR": d["ic_summary"]["ic_ir"],
+                "多空年化": d["layers"]["spread_annual"],
+                "单调性": d["layers"]["monotonic"],
+                "换手率": d["turnover"],
+                "评分": d["score"],
+            })
+
+    # —— WorldQuant 101 移植因子可选加入 PK（默认 3 个代表性因子）——
+    wq_all = alpha101_library.list_alpha101()
+    wq_default = ["alpha101_001", "alpha101_012", "alpha101_101"]
+    wq_keys = st.multiselect(
+        "额外加入 WorldQuant 101 移植因子（81 个可选，默认 3 个代表性）",
+        [f["key"] for f in wq_all],
+        default=wq_default,
+        format_func=lambda k: f"#{k[-3:]} {alpha101_library.get_alpha101(k)['name']}"
+                              f" —— {alpha101_library.get_alpha101(k)['description'][:26]}…",
+    )
+    with st.spinner("体检勾选的 WQ101 因子…"):
+        for k in wq_keys:
+            d = diagnose_expr_cached(
+                json.dumps(alpha101_library.get_alpha101(k)["expr"], ensure_ascii=False),
+                pool, style)
+            rows.append({
+                "因子": f"WQ#{k[-3:]}", "类型": "经典",
+                "expr_str": json.dumps(alpha101_library.get_alpha101(k)["expr"],
                                        ensure_ascii=False),
                 "IC均值": d["ic_summary"]["ic_mean"],
                 "IR": d["ic_summary"]["ic_ir"],
@@ -601,12 +666,16 @@ def render_strategy():
 
     factor_panel = None
     if source == "经典因子":
-        factors = factor_engine.list_factors()
-        labels = {f["key"]: f"{f['name']}（{f['formula']}）" for f in factors}
+        # 91 个内置因子：10 教科书 + 81 WorldQuant 101 移植（同一体检/回测管线）
+        factors = factor_engine.list_factors() + alpha101_library.list_alpha101()
+        labels = {f["key"]: f"{f['key']} {f['name']}（{f['formula'][:40]}…）"
+                  for f in factors}
         key = st.selectbox("选择因子", list(labels.keys()), format_func=lambda k: labels[k])
+        meta = (alpha101_library.get_alpha101(key) if key.startswith("alpha101_")
+                else factor_engine.get_factor(key))
         factor_panel = neutralize_factor(
-            dsdl.evaluate(factor_engine.get_factor(key)["expr"], panel), panel, style)
-        factor_desc = factor_engine.get_factor(key)["name"]
+            dsdl.evaluate(meta["expr"], panel), panel, style)
+        factor_desc = f"{key} {meta['name']}"
     else:
         last = st.session_state.get("last_result")
         if not last:
@@ -708,7 +777,7 @@ st.markdown(
       </div>
       <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
         <span style="background:rgba(255,255,255,.18); color:#fff; border-radius:20px;
-                     padding:4px 14px; font-size:13px;">🔒 18 个白名单算子 · 不执行任意代码</span>
+                     padding:4px 14px; font-size:13px;">🔒 38 个白名单算子 · 不执行任意代码</span>
         <span style="background:rgba(255,255,255,.18); color:#fff; border-radius:20px;
                      padding:4px 14px; font-size:13px;">📊 IC / 分层 / 换手 / 衰减 · 全套体检</span>
         <span style="background:rgba(255,255,255,.18); color:#fff; border-radius:20px;

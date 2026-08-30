@@ -112,19 +112,142 @@ def _abs(x: pd.DataFrame) -> pd.DataFrame:
     return x.abs()
 
 
-# 数据叶子：可直接访问的原始数据面板
-DATA_LEAVES = ["close", "high", "low", "volume", "amount", "turn", "pe", "pb"]
+# ============================================================
+# 一·五、alpha101 扩展算子（2026-08-29 WorldQuant 101 公式移植）
+# ============================================================
+# 全部为纯向量化 pandas/numpy 操作，白名单安全语义不变：
+#   ts2   — 二元时序算子（2 个表达式 + 窗口，如 ts_corr(x, y, d)）
+#   cond  — 三元条件算子（布尔条件 + 真值 + 假值，对应 WorldQuant '?:' 语法）
+
+
+def _delta(x: pd.DataFrame, d: int) -> pd.DataFrame:
+    """d 期差分：x_t - x_{t-d}。alpha101 最高频算子（动量/反转类公式的骨架）。"""
+    return x - x.shift(d)
+
+
+def _ts_sum(x: pd.DataFrame, d: int) -> pd.DataFrame:
+    """滚动求和（d 日窗口），对应 WorldQuant sum(x, d)。"""
+    return x.rolling(d, min_periods=max(1, d // 4)).sum()
+
+
+def _ts_corr(x: pd.DataFrame, y: pd.DataFrame, d: int) -> pd.DataFrame:
+    """滚动相关系数：x 与 y 在 d 日窗口内的 Pearson 相关。"""
+    return x.rolling(d, min_periods=max(2, d // 4)).corr(y)
+
+
+def _ts_cov(x: pd.DataFrame, y: pd.DataFrame, d: int) -> pd.DataFrame:
+    """滚动协方差：x 与 y 在 d 日窗口内的协方差（Alpha#13/16 用）。"""
+    return x.rolling(d, min_periods=max(2, d // 4)).cov(y)
+
+
+def _ts_argmax(x: pd.DataFrame, d: int) -> pd.DataFrame:
+    """滚动窗口内最大值的索引（0~d-1），对应 WorldQuant Ts_ArgMax。"""
+    return x.rolling(d, min_periods=max(2, d // 4)).apply(np.argmax, raw=True)
+
+
+def _ts_argmin(x: pd.DataFrame, d: int) -> pd.DataFrame:
+    """滚动窗口内最小值的索引（0~d-1），对应 WorldQuant Ts_ArgMin。"""
+    return x.rolling(d, min_periods=max(2, d // 4)).apply(np.argmin, raw=True)
+
+
+def _decay_linear(x: pd.DataFrame, d: int) -> pd.DataFrame:
+    """线性衰减加权平均：越近的观测权重越大（Alpha#40+ 系列高频使用）。
+    权重 w_i = (i + 1) / (d(d+1)/2)，i=0 最旧、i=d-1 最新（最新样本权重 d）。
+    min_periods=d：衰减权重需要满窗口（WorldQuant 语义；短窗口会使
+    实际窗口长度与定长 weights 维度不匹配而报错）。"""
+    weights = np.arange(1, d + 1, dtype=float)  # 近大远小：最新观测权重最大
+    weights /= weights.sum()
+    return x.rolling(d, min_periods=d).apply(
+        lambda w: float(np.dot(w, weights)), raw=True)
+
+
+def _ts_product(x: pd.DataFrame, d: int) -> pd.DataFrame:
+    """滚动乘积：窗口内各期连乘（Alpha#29 用，窗口短）。
+    注意大数可能溢出为 inf，由后续 rank 层吸收。"""
+    return x.rolling(d, min_periods=max(1, d // 4)).apply(np.prod, raw=True)
+
+
+def _scale(x: pd.DataFrame) -> pd.DataFrame:
+    """截面缩放：x / Σ|x|（同一交易日全部股票），对应 WorldQuant scale。
+    目的：把任意量纲的因子压到截面绝对值和为 1，消除量纲影响。"""
+    s = x.abs().sum(axis=1)
+    return x.div(s.replace(0, np.nan), axis=0)
+
+
+def _sign(x: pd.DataFrame) -> pd.DataFrame:
+    """符号函数：正 1 / 负 -1 / 零 0（Alpha#7/12/19 构造方向信号）。"""
+    return np.sign(x)
+
+
+def _ln(x: pd.DataFrame) -> pd.DataFrame:
+    """自然对数 ln(x)：x<=0 返回 NaN（alpha101 公式中 ln 只作用于正量）。
+    注意与 log 算子（log1p 语义）区分——这是 WorldQuant 公式的原生对数。"""
+    return np.log(x.where(x > 0))
+
+
+def _pow(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """逐元素幂 a^b：指数可以是常量（如 Alpha#54 的 open^5）或
+    表达式面板（如 Alpha#84 的 SignedPower(x, delta(close, 5))）。
+    负底数配非整数指数会得 NaN——由后续 rank 层吸收。"""
+    return np.power(a, b)
+
+
+def _min2(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """逐元素最小值（二元算子；与 ts_min 时序滚动语义区分）。"""
+    return np.minimum(a, b)
+
+
+def _max2(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """逐元素最大值（二元算子；与 ts_max 时序滚动语义区分）。"""
+    return np.maximum(a, b)
+
+
+def _gt(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """逐元素大于比较，返回布尔面板（供 cond 条件使用）。"""
+    return a > b
+
+
+def _lt(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """逐元素小于比较，返回布尔面板（供 cond 条件使用）。"""
+    return a < b
+
+
+def _eq(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """逐元素相等比较，返回布尔面板（供 cond 条件使用）。"""
+    return a == b
+
+
+def _logical_and(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """逐元素逻辑与（布尔面板组合，如 cond 的复合条件）。"""
+    return np.logical_and(a, b)
+
+
+def _logical_or(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """逐元素逻辑或（布尔面板组合）。"""
+    return np.logical_or(a, b)
+
+
+def _cond(c: pd.DataFrame, a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+    """三元条件：c 为真取 a、否则取 b（对应 WorldQuant '? :' 语法，Alpha#7/9/10/21 等）。
+    a.where(c, b)：c 中 True 的位置保留 a 的值，其余取 b。"""
+    return a.where(c, b)
+
+
+# 数据叶子：可直接访问的原始数据面板（open/vwap 为 alpha101 新增）
+DATA_LEAVES = ["open", "close", "high", "low", "volume", "amount", "vwap", "turn", "pe", "pb"]
 
 OPERATORS: dict[str, dict] = {
     # —— 时序算子（param 为窗口天数）——
     "ts_returns":   {"kind": "ts", "fn": _ts_returns, "param_min": 1, "param_max": 60},
-    "ts_mean":      {"kind": "ts", "fn": _ts_mean, "param_min": 2, "param_max": 120},
+    "ts_mean":      {"kind": "ts", "fn": _ts_mean, "param_min": 2, "param_max": 260},  # adv180 需要
     "ts_std":       {"kind": "ts", "fn": _ts_std, "param_min": 2, "param_max": 120},
     "ts_zscore":    {"kind": "ts", "fn": _ts_zscore, "param_min": 5, "param_max": 120},
-    "ts_rank":      {"kind": "ts", "fn": _ts_rank, "param_min": 5, "param_max": 120},
+    # 窗口范围说明（alpha101 官方参数）：ts_rank 官方最小 3、ts_mean 官方最大 adv180、
+    # delay/delta 官方最长 100 日——为支持 alpha101 全谱公式放宽
+    "ts_rank":      {"kind": "ts", "fn": _ts_rank, "param_min": 2, "param_max": 120},
     "ts_max":       {"kind": "ts", "fn": _ts_max, "param_min": 2, "param_max": 260},
     "ts_min":       {"kind": "ts", "fn": _ts_min, "param_min": 2, "param_max": 260},
-    "delay":        {"kind": "ts", "fn": _delay, "param_min": 1, "param_max": 60},
+    "delay":        {"kind": "ts", "fn": _delay, "param_min": 1, "param_max": 260},
     # —— 截面算子（同一天内所有股票）——
     "rank":         {"kind": "cross", "fn": _rank},
     "normalize":    {"kind": "cross", "fn": _normalize},
@@ -137,6 +260,32 @@ OPERATORS: dict[str, dict] = {
     "log":          {"kind": "unop", "fn": _log},
     "abs":          {"kind": "unop", "fn": _abs},
     "neg":          {"kind": "unop", "fn": lambda a: -a},
+    # —— 时序算子（alpha101 扩展）——
+    "delta":        {"kind": "ts", "fn": _delta, "param_min": 1, "param_max": 260},  # Alpha#24 用 100 日
+    "ts_sum":       {"kind": "ts", "fn": _ts_sum, "param_min": 1, "param_max": 260},
+    "ts_product":   {"kind": "ts", "fn": _ts_product, "param_min": 1, "param_max": 30},
+    "ts_argmax":    {"kind": "ts", "fn": _ts_argmax, "param_min": 2, "param_max": 60},
+    "ts_argmin":    {"kind": "ts", "fn": _ts_argmin, "param_min": 2, "param_max": 60},
+    "decay_linear": {"kind": "ts", "fn": _decay_linear, "param_min": 2, "param_max": 60},
+    # —— 二元时序算子（2 个表达式 + 窗口参数）——
+    "ts_corr":      {"kind": "ts2", "fn": _ts_corr, "param_min": 2, "param_max": 260},
+    "ts_cov":       {"kind": "ts2", "fn": _ts_cov, "param_min": 2, "param_max": 260},
+    # —— 截面算子（alpha101 扩展）——
+    "scale":        {"kind": "cross", "fn": _scale},
+    # —— 一元算子（alpha101 扩展）——
+    "sign":         {"kind": "unop", "fn": _sign},
+    "ln":           {"kind": "unop", "fn": _ln},
+    # —— 二元算子（alpha101 扩展：逐元素 / 比较 / 逻辑）——
+    "pow":          {"kind": "binop", "fn": _pow},
+    "min":          {"kind": "binop", "fn": _min2},
+    "max":          {"kind": "binop", "fn": _max2},
+    "gt":           {"kind": "binop", "fn": _gt},
+    "lt":           {"kind": "binop", "fn": _lt},
+    "eq":           {"kind": "binop", "fn": _eq},
+    "and":          {"kind": "binop", "fn": _logical_and},
+    "or":           {"kind": "binop", "fn": _logical_or},
+    # —— 三元条件算子（对应 WorldQuant '?:' 语法）——
+    "cond":         {"kind": "cond", "fn": _cond},
 }
 
 # 求解限制（防止 LLM 输出把程序拖垮）
@@ -170,12 +319,17 @@ def parse_factor(expr_str: str) -> dict:
     return expr
 
 
-def _validate(node: dict, depth: int, counter: list[int]) -> None:
-    """递归校验一个节点（及子树）。counter 统计总节点数。"""
-    if depth > MAX_DEPTH:
+def _validate(node: dict, depth: int, counter: list[int], trusted: bool = False) -> None:
+    """递归校验一个节点（及子树）。counter 统计总节点数。
+
+    trusted=True 时跳过 MAX_DEPTH/MAX_NODES（深度/节点数护栏是给 LLM 和
+    手动输入的——防止失控公式烧算力；内建因子库（经典库/alpha101）是
+    开发者手写的受信表达式，仍逐算子校验合法性，只是不限制复杂度）。
+    """
+    if not trusted and depth > MAX_DEPTH:
         raise FactorParseError(f"表达式深度超过限制（{MAX_DEPTH}），请让因子更简洁")
     counter[0] += 1
-    if counter[0] > MAX_NODES:
+    if not trusted and counter[0] > MAX_NODES:
         raise FactorParseError(f"表达式节点数超过限制（{MAX_NODES}），请让因子更简洁")
 
     if not isinstance(node, dict) or "op" not in node:
@@ -200,13 +354,28 @@ def _validate(node: dict, depth: int, counter: list[int]) -> None:
     spec = OPERATORS[op]
     args = node.get("args", [])
 
-    if spec["kind"] in ("binop",):
+    if spec["kind"] == "cond":
+        if not isinstance(args, list) or len(args) != 3:
+            raise FactorParseError(f"{op} 需要恰好 3 个参数（条件, 真值, 假值）")
+        if "param" in node:
+            raise FactorParseError(f"{op} 不应带 param")
+        for a in args:
+            _validate(a, depth + 1, counter, trusted)
+    elif spec["kind"] in ("binop",):
         if not isinstance(args, list) or len(args) != 2:
             raise FactorParseError(f"{op} 需要恰好 2 个参数")
         if "param" in node:
             raise FactorParseError(f"{op} 不应带 param")
         for a in args:
-            _validate(a, depth + 1, counter)
+            _validate(a, depth + 1, counter, trusted)
+    elif spec["kind"] == "ts2":
+        if not isinstance(args, list) or len(args) != 2:
+            raise FactorParseError(f"{op} 需要恰好 2 个参数（两个表达式）")
+        p = node.get("param")
+        if not isinstance(p, int) or not (spec["param_min"] <= p <= spec["param_max"]):
+            raise FactorParseError(f"{op} 的窗口参数必须是 {spec['param_min']}~{spec['param_max']} 的整数")
+        for a in args:
+            _validate(a, depth + 1, counter, trusted)
     elif spec["kind"] == "unop":
         if not isinstance(args, list) or len(args) != 1:
             raise FactorParseError(f"{op} 需要恰好 1 个参数")
@@ -215,20 +384,20 @@ def _validate(node: dict, depth: int, counter: list[int]) -> None:
                 raise FactorParseError(f"{op} 需要数值 param（幂指数）")
         elif "param" in node:
             raise FactorParseError(f"{op} 不应带 param")
-        _validate(args[0], depth + 1, counter)
+        _validate(args[0], depth + 1, counter, trusted)
     elif spec["kind"] == "ts":
         if not isinstance(args, list) or len(args) != 1:
             raise FactorParseError(f"{op} 需要恰好 1 个参数")
         p = node.get("param")
         if not isinstance(p, int) or not (spec["param_min"] <= p <= spec["param_max"]):
             raise FactorParseError(f"{op} 的窗口参数必须是 {spec['param_min']}~{spec['param_max']} 的整数")
-        _validate(args[0], depth + 1, counter)
+        _validate(args[0], depth + 1, counter, trusted)
     elif spec["kind"] == "cross":
         if not isinstance(args, list) or len(args) != 1:
             raise FactorParseError(f"{op} 需要恰好 1 个参数")
         if "param" in node:
             raise FactorParseError(f"{op} 不应带 param")
-        _validate(args[0], depth + 1, counter)
+        _validate(args[0], depth + 1, counter, trusted)
 
 
 # ============================================================
@@ -325,7 +494,9 @@ class _FormulaParser:
         # 只有时序算子（ts_*）和 signed_power 的第 2 个参数才是数值 param；
         # 其他算子（如 add(close, 5)）的数字参数解析为 const 表达式。
         spec = OPERATORS.get(name, {})
-        takes_param = spec.get("kind") == "ts" or spec.get("needs_param")
+        # ts/ts2 算子（如 ts_mean(x, 20)、ts_corr(x, y, 10)）的最后参数是数值窗口；
+        # needs_param（signed_power）同理
+        takes_param = spec.get("kind") in ("ts", "ts2") or spec.get("needs_param")
         args = []
         param = None
         while self.peek() != ")":
@@ -347,7 +518,7 @@ class _FormulaParser:
         return node
 
 
-def parse_formula(s: str) -> dict:
+def parse_formula(s: str, trusted: bool = False) -> dict:
     """
     人类可读公式 → 表达式树（如 "rank(ts_mean(close, 20))"）。
     与 parse_factor 输出同构：走同一套 _validate 白名单校验。
@@ -355,6 +526,7 @@ def parse_formula(s: str) -> dict:
         rank(neg(ts_std(ts_returns(close, 1), 20)))   函数式
         (ts_mean(close, 20) + ts_returns(close, 5))   中缀（+ - * /）
         rank(ts_mean(close, 20) / ts_mean(volume, 20)) 混合
+    trusted=True：跳过 MAX_DEPTH/MAX_NODES（alpha101 内建库 round-trip 用）。
     """
     tokens = _tokenize(s)
     if not tokens:
@@ -363,7 +535,7 @@ def parse_formula(s: str) -> dict:
     expr = parser.parse_expr()
     if parser.peek() is not None:  # 有多余 token（如 "rank(x))" 多余括号）
         raise FactorParseError(f"公式有多余内容: {parser.peek()!r}")
-    _validate(expr, depth=0, counter=[0])
+    _validate(expr, depth=0, counter=[0], trusted=trusted)
     return expr
 
 
@@ -397,16 +569,24 @@ def _eval_node(node: dict, panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
                             columns=next(iter(panel.values())).columns)
 
     spec = OPERATORS[op]
-    if spec["kind"] in ("ts", "cross", "unop"):
+    if spec["kind"] in ("ts", "ts2", "cross", "unop"):
         x = _eval_node(node["args"][0], panel)
     if spec["kind"] == "ts":
         return spec["fn"](x, node["param"])
+    if spec["kind"] == "ts2":
+        y = _eval_node(node["args"][1], panel)
+        return spec["fn"](x, y, node["param"])
     if spec["kind"] == "cross":
         return spec["fn"](x)
     if spec["kind"] == "unop":
         if spec.get("needs_param"):
             return spec["fn"](x, node["param"])
         return spec["fn"](x)
+    if spec["kind"] == "cond":
+        c = _eval_node(node["args"][0], panel)
+        a = _eval_node(node["args"][1], panel)
+        b = _eval_node(node["args"][2], panel)
+        return spec["fn"](c, a, b)
     if spec["kind"] == "binop":
         a = _eval_node(node["args"][0], panel)
         b = _eval_node(node["args"][1], panel)
@@ -429,6 +609,12 @@ def to_formula(expr: dict) -> str:
         return f"ts_returns({to_formula(expr['args'][0])}, {expr['param']})"
     if OPERATORS[op]["kind"] == "ts":
         return f"{op}({to_formula(expr['args'][0])}, {expr['param']})"
+    if OPERATORS[op]["kind"] == "ts2":
+        a, b = (to_formula(x) for x in expr["args"])
+        return f"{op}({a}, {b}, {expr['param']})"
+    if OPERATORS[op]["kind"] == "cond":
+        c, a, b = (to_formula(x) for x in expr["args"])
+        return f"cond({c}, {a}, {b})"
     if OPERATORS[op]["kind"] == "cross":
         return f"{op}({to_formula(expr['args'][0])})"
     if OPERATORS[op]["kind"] == "unop":
@@ -437,7 +623,11 @@ def to_formula(expr: dict) -> str:
         return f"{op}({to_formula(expr['args'][0])})"
     if OPERATORS[op]["kind"] == "binop":
         a, b = (to_formula(x) for x in expr["args"])
-        return f"({a} {op} {b})"
+        # 算术算子输出中缀（add/sub/mul/div 解析器支持中缀）；
+        # 比较/逻辑/逐元素算子输出函数式（gt(a, b) 等，保证 round-trip）
+        if op in ("add", "sub", "mul", "div"):
+            return f"({a} {op} {b})"
+        return f"{op}({a}, {b})"
 
 
 def render_tree(expr: dict, indent: int = 0) -> str:
@@ -457,7 +647,7 @@ def render_tree(expr: dict, indent: int = 0) -> str:
         return "\n".join(lines)
     if op == "ts_returns":
         lines[-1] += f" (period={expr['param']})"
-    elif op in OPERATORS and OPERATORS[op]["kind"] == "ts":
+    elif op in OPERATORS and OPERATORS[op]["kind"] in ("ts", "ts2"):
         lines[-1] += f" (window={expr['param']})"
     if OPERATORS.get(op, {}).get("needs_param"):
         lines[-1] += f" (exponent={expr['param']})"
@@ -485,9 +675,16 @@ if __name__ == "__main__":
         },
         index=idx,
     ).reset_index()
+    # alpha101 测试需要 open/high/low/amount/vwap（vwap = amount/volume 与真实数据同定义）
+    data["open"] = data["close"] * (1 + rng.normal(0, 0.01, len(idx)))
+    data["high"] = data["close"] * (1 + np.abs(rng.normal(0, 0.01, len(idx))))
+    data["low"] = data["close"] * (1 - np.abs(rng.normal(0, 0.01, len(idx))))
+    data["amount"] = data["volume"] * data["close"] * 100
+    data["vwap"] = data["amount"] / data["volume"]
     data = data.rename(columns={"level_0": "date", "level_1": "code"})
     test_panel = {}
-    for name in ["close", "volume", "turn", "pe", "pb"]:
+    for name in ["open", "close", "high", "low", "volume", "amount", "vwap",
+                 "turn", "pe", "pb"]:
         test_panel[name] = data.pivot_table(index="date", columns="code", values=name)
 
     print("=== 测试 1: 数据叶子 ===")
@@ -562,5 +759,44 @@ if __name__ == "__main__":
             print("⚠️  未拦截: ", bad[:60])
         except FactorParseError as e:
             print("✅ 拦截:", str(e)[:70])
+
+    print("\n=== 测试 7: alpha101 扩展算子（WorldQuant 公式结构） ===")
+    # 每个用例对应真实 alpha101 公式的算子组合，验证解析/求值/round-trip
+    alpha_cases = [
+        # Alpha#1 结构: rank(Ts_ArgMax(SignedPower(...,2.),5))
+        "rank(ts_argmax(signed_power(close, 2), 5))",
+        # Alpha#3: -1 * correlation(rank(open), rank(volume), 10)
+        "neg(ts_corr(rank(open), rank(volume), 10))",
+        # Alpha#7 条件式: (adv20 < volume) ? ... : -1
+        "cond(gt(volume, ts_mean(volume, 20)), neg(ts_rank(abs(delta(close, 7)), 60)), neg(1))",
+        # Alpha#12: sign(delta(volume, 1)) * (-1 * delta(close, 1))
+        "mul(sign(delta(volume, 1)), neg(delta(close, 1)))",
+        # Alpha#13: -1 * rank(covariance(rank(close), rank(volume), 5))
+        "neg(rank(ts_cov(rank(close), rank(volume), 5)))",
+        # Alpha#19 片段: sign(close - delay(close, 7))
+        "sign(sub(close, delay(close, 7)))",
+        # Alpha#28 片段: scale(correlation(adv20, low, 5) + (high + low)/2 - close)
+        "scale(sub(add(ts_corr(ts_mean(volume, 20), low, 5), div(add(high, low), 2)), close))",
+        # Alpha#29 片段: min(product(rank(...), 1), 5)
+        "min(ts_product(rank(volume), 1), 5)",
+        # decay_linear（Alpha#40+ 高频）
+        "decay_linear(ts_returns(close, 1), 10)",
+        # ts_sum + ln
+        "ln(ts_sum(volume, 10))",
+        # 复合条件（and/or 组合）
+        "cond(and(gt(volume, ts_mean(volume, 20)), lt(volume, ts_mean(volume, 20))), close, open)",
+        # ts_argmin
+        "rank(ts_argmin(close, 5))",
+        # 二元逐元素 min/max + eq
+        "cond(eq(max(close, open), close), close, open)",
+    ]
+    for f in alpha_cases:
+        e = parse_formula(f)
+        rt = to_formula(e)
+        val = evaluate(e, test_panel)
+        assert val.shape == test_panel["close"].shape, f"形状不符: {f}"
+        assert parse_formula(rt) == e, f"round-trip 失败: {f}"
+        print(f"  ✅ {rt[:72]}")
+    print("alpha101 扩展算子自测通过 ✅")
 
     print("\n全部自测通过 ✅")

@@ -9,4 +9,7 @@ python-dotenv>=1.0
 plotly>=5.20
 # 以下仅文档/图表生成需要（scripts/ 下的 make_charts.py、PDF 管线）
 matplotlib>=3.8
-pypdf>=4.0
+PyMuPDF>=1.24        # build_pdf.py 目录页码回查
+markdown>=3.6        # build_proposal_html.py
+Pillow>=10.0         # make_cover.py
+websocket-client>=1.7  # print_pdf_cdp.py（CDP 控制 Chromium 打印）

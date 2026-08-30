@@ -40,16 +40,6 @@ def mktcap_proxy(panel: dict) -> pd.DataFrame:
     return cap.replace([np.inf, -np.inf], np.nan)
 
 
-def _design_matrix(industry: pd.Series, log_size: pd.Series | None,
-                   codes: pd.Index) -> np.ndarray:
-    """构造回归设计矩阵：行业哑变量（全组，lstsq 自动处理秩亏）+ 可选 log市值。
-    注意用 codes 对齐：跨日行业/市值可能缺，截面内逐日构造保证对齐。"""
-    parts = [np.array([industry.get(c, np.nan) for c in codes], dtype=object)]
-    if log_size is not None:
-        pass  # 在逐日逻辑中处理（size 是逐日变化的，不能静态构造）
-    return None
-
-
 def neutralize(factor: pd.DataFrame,
                industry: pd.Series | None,
                log_size: pd.DataFrame | None = None,

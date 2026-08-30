@@ -100,28 +100,43 @@ def _llm_json(system: str, user: str, temperature: float = 0.3) -> dict:
 # 一、因子生成
 # ============================================================
 
-# DSL 算子说明书——给 LLM 看的白名单手册（必须与 dsdl.OPERATORS 一致）
+# DSL 算子说明书——给 LLM 看的白名单手册（与 dsdl.OPERATORS 注册表完全一致：
+# 38 算子 + 10 数据叶子 + const。新增算子源于 alpha101 公式库移植，
+# 窗口范围以引擎为准——LLM 超出范围会被解析层拦截并中文报错）
 OPERATOR_MANUAL = """
 可用算子（只能使用这些，禁止自创）：
-【数据字段（叶子）】close 收盘价 / high 最高价 / low 最低价 / volume 成交量 /
-  amount 成交额 / turn 换手率(%) / pe 市盈率TTM / pb 市净率
-【时序算子】作用于每只股票自身的历史（窗口天数叫 param）：
+【数据字段（叶子）】open 开盘价 / close 收盘价 / high 最高价 / low 最低价 /
+  volume 成交量 / amount 成交额 / vwap 均价(amount/volume) / turn 换手率(%) /
+  pe 市盈率TTM / pb 市净率
+【时序算子】作用于每只股票自身的历史（窗口天数叫 param，必须在该算子范围内）：
   ts_returns(x, d)      d日收益率 = x_t/x_{t-d} - 1（d: 1~60）
-  ts_mean(x, d)         滚动均值（d: 2~120）
+  ts_mean(x, d)         滚动均值（d: 2~260）
   ts_std(x, d)          滚动标准差（d: 2~120）
   ts_zscore(x, d)       滚动z-score（去趋势去量纲）（d: 5~120）
-  ts_rank(x, d)         滚动百分位排名0~1（d: 5~120）
+  ts_rank(x, d)         滚动百分位排名0~1（d: 2~120）
   ts_max(x, d) / ts_min(x, d)  滚动最大/最小（d: 2~260，支持52周高点类因子）
-  ts_corr(x, y, d)      x与y的滚动相关（d: 2~120）
-  delay(x, d)           滞后d期（d: 1~60）
+  delay(x, d)           滞后d期（d: 1~260）
+  delta(x, d)           d期差分 x_t - x_{t-d}（d: 1~260）
+  ts_sum(x, d) / ts_product(x, d)  滚动加总 / 连乘（d: 1~260 / 1~30）
+  ts_argmax(x, d) / ts_argmin(x, d)  窗口内最大/最小值位置（d: 2~60）
+  decay_linear(x, d)    d期线性衰减加权（近值权重高）（d: 2~60）
+  ts_corr(x, y, d) / ts_cov(x, y, d)  x与y的滚动相关 / 协方差（d: 2~260）
 【截面算子】同一天所有股票之间：
   rank(x)               截面排名0~1（越大=当天所有股票中越靠前）
   normalize(x)          截面z-score（去截面均值和量纲）
-【组合算子】
-  add/sub/mul/div       x与y的加减乘除（div 除零自动变缺失）
+  scale(x)              截面缩放 Σ|x| = 1
+【一元算子】
   signed_power(x, e)    带符号幂 sign(x)·|x|^e（e: 0.1~3）
-  log(x)                log(1+x)
-  abs(x) / neg(x)       绝对值 / 取负
+  log(x) / ln(x)        log(1+x) / 自然对数
+  abs(x) / neg(x) / sign(x)  绝对值 / 取负 / 取符号
+【二元算子】
+  add/sub/mul/div       x与y的加减乘除（div 除零自动变缺失）
+  pow(x, y)             幂 x^y
+  min(x, y) / max(x, y) 逐元素取小/取大
+  gt(x, y) / lt(x, y) / eq(x, y)  逐元素比较，返回 1.0/0.0
+  and(x, y) / or(x, y)  逐元素逻辑与/或（非 0 视为真）
+【条件算子】
+  cond(cond_expr, a, b)  条件为真（非 0）取 a，否则取 b（对应 WorldQuant '?:'）
 【常量】{"op": "const", "value": 1.0}
 """
 

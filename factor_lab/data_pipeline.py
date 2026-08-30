@@ -23,6 +23,7 @@
 import os
 import time
 
+import numpy as np
 import pandas as pd
 
 # 数据目录（本文件所在包的上一级 /data）
@@ -38,11 +39,17 @@ INDEX_PATH = os.path.join(DATA_DIR, "hs300_index.csv")
 # 行业映射（全 A 池中性化用）：code → 证监会行业分类
 INDUSTRY_PATH = os.path.join(DATA_DIR, "ashare_industry.csv")
 
+# 全 A 池 open 字段补数缓存（scripts/backfill_open.py 生成）：code,date,open 长表。
+# ashare_raw.csv 由 build_data_ashare.py 生成时 FIELDS 未含 open，
+# 而 alpha101 因子库大量公式使用 open —— load_panel 检测缺列时自动 merge 此表。
+OPEN_CACHE_PATH = os.path.join(DATA_DIR, "ashare_open.csv")
+
 POOLS = {"hs300": RAW_PATH, "ashare": A_SHARE_RAW_PATH}
 
 # baostock 日线字段说明（字段名与 baostock 文档一致）：
 #   date    交易日期
 #   code    证券代码（sh.600000 格式）
+#   open    开盘价（前复权）——alpha101 因子库大量公式使用
 #   close   收盘价（前复权）
 #   high    最高价
 #   low     最低价
@@ -51,7 +58,7 @@ POOLS = {"hs300": RAW_PATH, "ashare": A_SHARE_RAW_PATH}
 #   turn    换手率（%）
 #   peTTM   市盈率 TTM
 #   pbMRQ   市净率
-K_FIELDS = "date,code,close,high,low,volume,amount,turn,peTTM,pbMRQ"
+K_FIELDS = "date,code,open,close,high,low,volume,amount,turn,peTTM,pbMRQ"
 
 
 def _ensure_baostock():
@@ -126,7 +133,7 @@ def download_hs300_data(
         df = pd.concat(frames, ignore_index=True)
 
         # ——— 3. 类型转换（baostock 全部返回字符串） ———
-        num_cols = ["close", "high", "low", "volume", "amount", "turn", "peTTM", "pbMRQ"]
+        num_cols = ["open", "close", "high", "low", "volume", "amount", "turn", "peTTM", "pbMRQ"]
         for col in num_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.sort_values(["date", "code"]).reset_index(drop=True)
@@ -213,6 +220,32 @@ def load_index() -> pd.Series:
     return pd.Series(idx["close"].values, index=idx["date"])
 
 
+def _attach_open_cache(df: pd.DataFrame, pool: str) -> pd.DataFrame:
+    """面板缺 open 列时，从 ashare_open.csv（backfill_open.py 产物）合并补上。
+
+    背景：全 A 数据文件生成时未含 open 列（build_data_ashare.py 的 FIELDS
+    历史版本无 open），而 alpha101 因子库大量公式需要 open。不重下 434MB
+    主文件，只按 (code, date) 左连接补一列——多出来的缓存行无害，
+    主表没有的日期不会进面板。
+
+    返回：补上 open 列后的长表；缓存不存在时给出明确指引而非静默崩溃。
+    """
+    if not os.path.exists(OPEN_CACHE_PATH):
+        raise RuntimeError(
+            f"面板缺 open 列且找不到补数缓存 {OPEN_CACHE_PATH}\n"
+            "请先运行: PYTHONIOENCODING=utf-8 python scripts/backfill_open.py"
+            "（只补 open 一列，断点续传，不用重下全 A 主数据）"
+        )
+    op = pd.read_csv(OPEN_CACHE_PATH, usecols=["code", "date", "open"])
+    op["open"] = pd.to_numeric(op["open"], errors="coerce")
+    merged = df.merge(op, on=["code", "date"], how="left")
+    missing = merged["open"].isna().mean()
+    if missing > 0.5:
+        print(f"⚠️  open 补数覆盖率偏低（缺失 {missing:.0%}），可能是补数尚未跑完，"
+              f"open 相关因子将出现缺失值（如实保留 NaN，不填 0）")
+    return merged
+
+
 def load_panel(pool: str = "hs300") -> dict[str, pd.DataFrame]:
     """
     把长表转成 (date × code) 的 wide 面板，供因子 DSL 向量化求值。
@@ -221,21 +254,28 @@ def load_panel(pool: str = "hs300") -> dict[str, pd.DataFrame]:
         pool — "hs300"（默认，300 只，快）/ "ashare"（全 A 5000+ 只，首次加载慢）
 
     返回：
-        dict：key 为数据名（close/high/low/volume/amount/turn/pe/pb），
+        dict：key 为数据名（open/close/high/low/volume/amount/vwap/turn/pe/pb），
               value 为 DataFrame（index=date, columns=code）
 
     原理：长表 → 以 (date, code) 为多级索引 → unstack 成宽表。
     unstack 比 pivot_table 快一个量级（全 A 400 万行时差异显著）。
     """
     df = load_raw(pool)
+    if "open" not in df.columns:
+        df = _attach_open_cache(df, pool)
     df = df.set_index(["date", "code"]).sort_index()
+    # vwap（成交量加权均价）= 全天成交额 / 成交量。
+    # WorldQuant 101 公式大量使用 vwap，作为派生字段而非独立下载列
+    df["vwap"] = df["amount"] / df["volume"].replace(0, np.nan)
     panel = {}
     for name, col in [
+        ("open", "open"),
         ("close", "close"),
         ("high", "high"),
         ("low", "low"),
         ("volume", "volume"),
         ("amount", "amount"),
+        ("vwap", "vwap"),
         ("turn", "turn"),
         ("pe", "peTTM"),
         ("pb", "pbMRQ"),

@@ -15,6 +15,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+tmp/
 
 # Streamlit / 系统
 .streamlit/

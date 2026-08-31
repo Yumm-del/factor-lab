@@ -256,7 +256,13 @@ OPERATORS: dict[str, dict] = {
     "sub":          {"kind": "binop", "fn": lambda a, b: a - b},
     "mul":          {"kind": "binop", "fn": lambda a, b: a * b},
     "div":          {"kind": "binop", "fn": lambda a, b: a / b.replace(0, np.nan)},
-    "signed_power": {"kind": "unop", "fn": _signed_power, "needs_param": True},
+    "signed_power": {
+        "kind": "unop",
+        "fn": _signed_power,
+        "needs_param": True,
+        "param_min": 0.1,
+        "param_max": 3.0,
+    },
     "log":          {"kind": "unop", "fn": _log},
     "abs":          {"kind": "unop", "fn": _abs},
     "neg":          {"kind": "unop", "fn": lambda a: -a},
@@ -338,13 +344,20 @@ def _validate(node: dict, depth: int, counter: list[int], trusted: bool = False)
     op = node["op"]
     # —— 叶子：数据字段 ——
     if op in DATA_LEAVES:
-        if "args" in node:
-            raise FactorParseError(f"数据叶子 {op} 不应带参数")
+        extra = set(node) - {"op"}
+        if extra:
+            raise FactorParseError(f"数据叶子 {op} 不应带字段: {', '.join(sorted(extra))}")
         return
     # —— 常量 ——
     if op == "const":
-        if not isinstance(node.get("value"), (int, float)):
-            raise FactorParseError("const 需要数值 value")
+        extra = set(node) - {"op", "value"}
+        if extra:
+            raise FactorParseError(f"const 不应带字段: {', '.join(sorted(extra))}")
+        value = node.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise FactorParseError("const 需要有限数值 value")
+        if not np.isfinite(value):
+            raise FactorParseError("const 需要有限数值 value，不能是 NaN 或 Infinity")
         return
     # —— 注册表算子 ——
     if op not in OPERATORS:
@@ -353,6 +366,12 @@ def _validate(node: dict, depth: int, counter: list[int], trusted: bool = False)
         )
     spec = OPERATORS[op]
     args = node.get("args", [])
+    allowed_keys = {"op", "args"}
+    if spec["kind"] in ("ts", "ts2") or spec.get("needs_param"):
+        allowed_keys.add("param")
+    extra = set(node) - allowed_keys
+    if extra:
+        raise FactorParseError(f"{op} 不应带字段: {', '.join(sorted(extra))}")
 
     if spec["kind"] == "cond":
         if not isinstance(args, list) or len(args) != 3:
@@ -380,8 +399,13 @@ def _validate(node: dict, depth: int, counter: list[int], trusted: bool = False)
         if not isinstance(args, list) or len(args) != 1:
             raise FactorParseError(f"{op} 需要恰好 1 个参数")
         if spec.get("needs_param"):  # signed_power 需要 exponent
-            if not isinstance(node.get("param"), (int, float)):
+            param = node.get("param")
+            if isinstance(param, bool) or not isinstance(param, (int, float)):
                 raise FactorParseError(f"{op} 需要数值 param（幂指数）")
+            if not (spec["param_min"] <= param <= spec["param_max"]):
+                raise FactorParseError(
+                    f"{op} 的幂指数必须在 {spec['param_min']}~{spec['param_max']} 之间"
+                )
         elif "param" in node:
             raise FactorParseError(f"{op} 不应带 param")
         _validate(args[0], depth + 1, counter, trusted)

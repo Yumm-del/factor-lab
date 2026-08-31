@@ -92,9 +92,31 @@ def _download_timeout(code: str, timeout: float = 30.0) -> list | None:
     return box if not t.is_alive() else None
 
 
+def _dedup_csv(path: str) -> None:
+    """整文件去重（幂等保证）：中断/补录轮可能重复写入同一 (code,date)，
+    重跑前先清一次——否则下游 load_panel 的 unstack 会报 duplicate entries。"""
+    if not os.path.exists(path):
+        return
+    seen: set[tuple[str, str]] = set()
+    with open(path, encoding="utf-8") as f_in, \
+            open(path + ".tmp", "w", encoding="utf-8") as f_out:
+        for line in f_in:
+            parts = line.split(",", 2)
+            if len(parts) < 2 or not parts[0].startswith(("sh.", "sz.")):
+                continue
+            key = (parts[0], parts[1])
+            if key in seen:
+                continue
+            seen.add(key)
+            f_out.write(line)
+    os.replace(path + ".tmp", path)
+    print(f"[幂等] 去重后 {len(seen):,} 条 (code,date) 记录", flush=True)
+
+
 def main() -> None:
     if not os.path.exists(SRC_CSV):
         raise SystemExit(f"找不到主数据 {SRC_CSV}，请先运行 build_data_ashare.py")
+    _dedup_csv(OUT_CSV)  # 历史残留重复行先清一次，保证断点续传的 done 集合干净
     done = _done_codes()
     codes = _src_codes()
     todo = [c for c in codes if c not in done]

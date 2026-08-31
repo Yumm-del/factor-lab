@@ -239,6 +239,9 @@ def _attach_open_cache(df: pd.DataFrame, pool: str) -> pd.DataFrame:
     # 注意：补数脚本用原生写入（无表头），必须 header=None + names 读取
     op = pd.read_csv(OPEN_CACHE_PATH, header=None, names=["code", "date", "open"])
     op["open"] = pd.to_numeric(op["open"], errors="coerce")
+    # 防御：补数脚本断点续传可能在补录轮重复写入同一 (code, date)，
+    # 不去重会导致下游 unstack 报 duplicate entries（实测 16k 条/18 只）
+    op = op.drop_duplicates(subset=["code", "date"], keep="last")
     merged = df.merge(op, on=["code", "date"], how="left")
     missing = merged["open"].isna().mean()
     if missing > 0.5:

@@ -33,11 +33,12 @@
 
 ## 操作流程
 
-1. 复制 `docs/evidence/user_study_template.csv` 为 `docs/evidence/user_study.csv`。
-2. 每完成一名参与者，立即增加一行；不要事后凭记忆批量填写。
-3. 原始 CSV 只使用匿名编号，不写姓名、手机号或学号。
-4. 运行 `python scripts/summarize_user_study.py`。
-5. 当有效样本少于 5 人时，报告会明确标记“证据不足”，不得写入项目书作为已验证结论。
+1. 使用 `docs/user_test_invitation.md` 中的招募文案和统一主持稿，不自行改变任务。
+2. 复制 `docs/evidence/user_study_template.csv` 为 `docs/evidence/user_study.csv`。
+3. 每完成一名参与者，立即增加一行；不要事后凭记忆批量填写。
+4. 原始 CSV 只使用匿名编号，不写姓名、手机号或学号。
+5. 运行 `python scripts/summarize_user_study.py`。
+6. 当有效样本少于 5 人时，报告会明确标记“证据不足”，不得写入项目书作为已验证结论。
 
 ## 项目书可采用的结果口径
 

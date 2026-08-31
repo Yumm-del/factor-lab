@@ -241,7 +241,11 @@ def render_diagnosis(diag: dict, expr_json: str | None = None):
     lay = diag["layers"]
     verdict = diag["verdict"]
 
-    # —— 结论横幅（彩色徽章 + 人话结论）——
+    st.caption(
+        "以下为当前本地数据窗口的体检结果；它是研究诊断，不等同于跨环境接纳或实盘结论。"
+    )
+
+    # —— 本地体检横幅（彩色徽章 + 人话结论）——
     badge_map = {"优秀": "#16a34a", "可用": "#ea580c", "淘汰": "#dc2626"}
     badge = badge_map[verdict["label"]]
     st.markdown(
@@ -381,6 +385,24 @@ def _dedup_hint_ui(dup: dict | None):
         )
 
 
+def _independent_validation_ui(result: dict) -> None:
+    """展示跨环境最终接纳决定，防止本地评分被误读为可交易结论。"""
+    validation_result = result.get("independent_validation")
+    if not validation_result:
+        return
+    label = validation_result.get("label", "独立复核结果")
+    summary = validation_result.get("summary", "")
+    if validation_result.get("status") == "rejected":
+        st.error(f"**{label}**\n\n{summary}")
+    else:
+        st.info(f"**{label}**\n\n{summary}")
+    st.caption(
+        "最终接纳以冻结候选、留出期和扣成本策略复核为准。"
+        "[查看完整 BigQuant 独立验证记录]"
+        "(https://github.com/Yumm-del/factor-lab/blob/master/docs/bigquant_validation.md)"
+    )
+
+
 def _pool_discovered(expr: dict, formula: str):
     """会话已挖因子加入因子池（幂等）——让池随会话生长，后续查重可识别。"""
     key = f"discovered_{hash(formula) & 0xFFFF:04x}"
@@ -500,6 +522,7 @@ def render_ai_factory():
     result = st.session_state.get("last_result")
     if result:
         st.divider()
+        _independent_validation_ui(result)
         _dedup_hint_ui(result.get("dup"))  # 展示时再次给出查重提示（preset 无 dup 字段，安全跳过）
         st.markdown(f"### 📝 因子定义：`{result['formula']}`")
         col1, col2 = st.columns(2)

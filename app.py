@@ -26,11 +26,15 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from factor_lab import (  # noqa: E402
     alpha101_library, data_pipeline, dsdl, factor_engine, llm_factor,
-    neutralize, strategy, validation,
+    neutralize, strategy, ui_config, validation,
 )
 from factor_lab.factor_pool import get_pool  # AlphaPool 式因子池查重
 
 st.set_page_config(page_title="因子实验室 · AI Factor Lab", layout="wide", page_icon="🧪")
+
+# Streamlit Cloud 可能跨部署保留 cache_data；显式版本号确保预置证据更新后
+# 不会继续展示旧报告。每次变更 presets.json 的语义结构时递增。
+PRESET_SCHEMA_VERSION = 2
 
 
 # ============================================================
@@ -111,8 +115,9 @@ def neutralize_factor(fac: pd.DataFrame, panel: dict, style: str) -> pd.DataFram
 
 
 @st.cache_data(show_spinner="加载预置示例…")
-def load_presets() -> list[dict]:
+def load_presets(schema_version: int) -> list[dict]:
     """预置示例（演示用，不依赖 API）→ 现算体检。"""
+    del schema_version  # 仅作为缓存键；内容由版本化的 presets.json 提供。
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "presets.json")
     if not os.path.exists(path):
         return []
@@ -433,7 +438,7 @@ def render_ai_factory():
 
     # —— 演示模式：预置示例（离线，不调 API，评委演示的保底方案）——
     with st.expander("📂 演示模式：载入预置示例（秒开，不调用 AI）"):
-        presets = load_presets()
+        presets = load_presets(PRESET_SCHEMA_VERSION)
         if not presets:
             st.caption("暂无预置示例（运行 `python scripts/make_preset.py` 生成）")
         for p in presets:
@@ -864,21 +869,30 @@ def render_strategy():
 st.sidebar.title("🧪 因子实验室")
 st.sidebar.markdown(
     "**AI 因子分析工作台**\n\n"
-    "自然语言 → 受限因子表达式 → 机构级体检 → AI 解读\n\n"
+    "自然语言 → 受限因子表达式 → 标准化体检 → AI 解读\n\n"
     "— 北大金融AI智能体创新大赛 · 赛道二 —"
 )
 
 # —— 股票池 + 中性化设置（全局生效）——
+ashare_available = os.path.exists(data_pipeline.A_SHARE_RAW_PATH)
+pool_options = ui_config.pool_options(ashare_available)
 pool_label = st.sidebar.radio(
-    "股票池", ["沪深300（300 只，快）", "全 A（5000+ 只，首次加载慢）"], key="pool_sel")
+    "股票池", pool_options, key="pool_sel")
 pool = "hs300" if pool_label.startswith("沪深300") else "ashare"
-style = st.sidebar.selectbox(
+if not ashare_available:
+    st.sidebar.caption("在线演示仅加载沪深300；全A 5320只验证在本地复现包中提供。")
+
+industry_available = os.path.exists(data_pipeline.INDUSTRY_PATH)
+style_options = ui_config.neutralization_options(industry_available)
+style_label = st.sidebar.selectbox(
     "因子中性化",
-    ["无", "行业", "行业+市值"],
+    style_options,
     help="把因子值对行业/市值回归取残差，剥离『选股其实在选行业/大小盘』的成分。"
          "行业映射表需全 A 数据下载完成后才可用。",
 )
-style_map = {"无": "none", "行业": "industry", "行业+市值": "industry+size"}
+style = ui_config.normalize_style(style_label)
+if not industry_available:
+    st.sidebar.caption("在线演示未加载行业映射；中性化结果见项目书与本地复现包。")
 
 panel = load_panel_cached(pool)
 
@@ -891,7 +905,7 @@ st.markdown(
         🧪 因子实验室 <span style="font-size:18px; font-weight:400; opacity:.85;">AI Factor Lab</span>
       </div>
       <div style="font-size:16px; color:#dbeafe; margin-top:6px;">
-        用一句话描述因子想法 → AI 生成<b>受限表达式</b> → 机构级体检 → 可实盘策略
+        用一句话描述因子想法 → AI 生成<b>受限表达式</b> → 标准化体检 → 扣成本策略复核
       </div>
       <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
         <span style="background:rgba(255,255,255,.18); color:#fff; border-radius:20px;
@@ -911,7 +925,7 @@ with st.sidebar:
         f"- 股票池：{'沪深300' if pool == 'hs300' else '全 A'}（{panel['close'].shape[1]} 只）\n"
         f"- 区间：{panel['close'].index[0]} ~ {panel['close'].index[-1]}\n"
         f"- 交易日：{panel['close'].shape[0]} 天\n"
-        f"- 中性化：{'无' if style == 'none' else style}"
+        f"- 中性化：{style_label}"
     )
     st.caption("数据源：baostock 日线（前复权）")
 

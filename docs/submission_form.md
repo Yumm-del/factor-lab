@@ -44,8 +44,10 @@ AI 会生成因子，但谁来阻止它把偶然收益说成规律？因子实�
 | Demo | `https://factor-lab-29n3ulxfgehjfbj5phsapi.streamlit.app/` | 已上线；首次访问可能需约30秒唤醒 |
 | 核心代码 | `https://github.com/Yumm-del/factor-lab` | 已公开 |
 | PDF | `docs/proposal.pdf` | 34页，自动质量门禁通过 |
+| 路演 PDF | `docs/submission/factor_lab_finalist_pitch.pdf` | 10页，PowerPoint 导出并逐页视觉复核通过 |
 | 演示视频 | 按 `docs/demo_script.md` 录制，优先离线预置示例 | 待录制 |
-| PPT | 总决赛版演示文稿 | 晋级后制作 |
+| PPT | `docs/submission/factor_lab_finalist_pitch.pptx` | 10页可编辑结构化演示稿；含20个 Layout、原生表格与逐页 Speaker Notes |
+| 路演讲稿 | `docs/submission/factor_lab_finalist_pitch_speaker_notes.md` | 10页一一对应，约6分钟 |
 
 ## 9. 提交前检查清单
 
@@ -54,6 +56,7 @@ AI 会生成因子，但谁来阻止它把偶然收益说成规律？因子实�
 - [x] PDF 已生成并通过页数、字体、目录、页脚、密度和关键指标检查
 - [x] 在线 Demo 已人工验收，休眠后可唤醒
 - [x] 16:9 封面已生成并完成视觉复核（1920×1080 PNG）
+- [x] 10页路演 PPT、路演 PDF 与逐页讲稿已生成并通过渲染复核
 - [ ] 完成不少于 5 名目标用户统一任务测试
 - [ ] 经明确授权后运行 5 题真实数据 Agent 消融
 - [ ] 录制并复核 3 分钟演示视频

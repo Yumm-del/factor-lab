@@ -50,3 +50,20 @@
 - 本地代码仓库保留受限 DSL、体检与本地策略流程；BigQuant 用于独立环境复核。
 - 该批留出期已冻结，不再据此继续搜索新公式；后续仅用新的样本外数据累积证据。
 - 固定成本并不等于完整实盘模拟；滑点、冲击成本、资金容量仍需后续补充。
+
+## 6. Alpha#25 HAC 显著性独立复核（2026-09-03）
+
+项目书 6.5.2 的 FDR 主结果（91 因子池中 BH/BY 校正后唯一存活的 Alpha#25）在独立数据环境复算，确认该数字不是本地数据/实现特有的产物。
+
+| 指标 | 本地 baostock（2023-06-01~2026-08-14） | BigQuant 独立复核（2023-06-01~2026-08-21） |
+|---|---:|---:|
+| 股票池 | 动态沪深300（每日 258~300 只有效） | 动态沪深300（`cn_stock_index_component` 每日成分，恒 300 只） |
+| IC 均值 | +0.021 | +0.0202 |
+| t (HAC, Newey-West) | +4.29 | +4.00 |
+| p (HAC) | — | 0.0001 |
+| 有效 IC 天数 | ~778 | 763 |
+
+- 复核脚本：`scripts/bigquant_recheck_alpha25.py`（BigQuant notebook 内运行；`dai.query` 数据 API 仅平台内可访问）
+- 独立实现：不 import 仓库代码——因子表达式按算子逐条翻译为 pandas；IC/HAC 统计量独立编写（带宽 L = ⌊8·(n/100)^(2/9)⌋、Bartlett 核，与 `factor_lab/robust.py` 口径一致）
+- 口径差异说明：BigQuant `cn_stock_bar1d` 的 OHLC 为「原始价 × adjust_factor」的复权价（放大数百倍），复核前先除以 adjust_factor 还原真实价再计算；vwap 以 amount/volume 近似（该表无 vwap 列）；样本截止日晚于本地约 1 周
+- 结论：符号与量级一致，独立支持 6.5.2 的「Alpha#25 全样本 HAC 显著、通过 BY-FDR」结论

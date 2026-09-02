@@ -4,7 +4,9 @@
 ======================================================================
 目的：项目书 6.5 的数字来源（同管线可复现）。输出两件实证：
   1. 因子池 FDR 校正：91 个内置因子（沪深300，全样本）名义显著几个、
-     经 Benjamini-Hochberg 校正后还剩几个——诚实标出「真正有效」的数量；
+     经 Benjamini-Hochberg / Benjamini-Yekutieli 校正后还剩几个——
+     诚实标出「真正有效」的数量（p 值来自 Newey-West HAC 稳健 t，
+     自相关 IC 序列不会虚增显著性）；
   2. 代表因子 walk-forward：动量20 / 低波动20 / Alpha#12 的四折 IC 与
      漂移判定——检验因子能力是否随时间平稳。
 
@@ -39,16 +41,20 @@ assert len(factor_vals) == 91, f"内置因子数应为 91，实际 {len(factor_v
 
 res = factor_pool_significance(factor_vals, close, alpha=0.05)
 print("=" * 78)
-print(f"FDR 校正：{res['n_tested']} 个因子（沪深300 全样本）"
-      f"→ 名义 |t|≥2 若干 → BH 校正后显著 {res['n_significant']} 个（α=0.05）")
+print(f"FDR 校正：{res['n_tested']} 个因子（沪深300 全样本）→ 名义 |t|≥2 若干 → "
+      f"BH 校正后显著 {res['n_bh']['n_significant']} 个、"
+      f"BY（任意依赖）{res['n_by']['n_significant']} 个（α=0.05，p 来自 HAC 稳健 t）")
 print("=" * 78)
-# 名义显著（|t|≥2）的因子及其 q 值，按 q 升序
-rows = [r for r in res["by_factor"] if not r["insufficient_data"] and abs(r["t"]) >= 2]
-rows.sort(key=lambda r: r["q"])
+# 名义显著（|t_hac|≥2）的因子及其 BH q 值，按 q_bh 升序
+rows = [r for r in res["by_factor"]
+        if not r["insufficient_data"] and abs(r["t_hac"]) >= 2]
+rows.sort(key=lambda r: r["q_bh"])
 for r in rows:
-    print(f"  {r['name']:<16} IC {r['ic_mean']:+.4f}  t {r['t']:+6.2f}  "
-          f"p {r['p']:.4f}  q {r['q']:.4f}  {'★显著' if r['significant'] else ''}")
-print(f"  → 名义显著 {len(rows)} 个；校正后显著 {res['n_significant']} 个")
+    print(f"  {r['name']:<16} IC {r['ic_mean']:+.4f}  t(HAC) {r['t_hac']:+6.2f}  "
+          f"p {r['p']:.4f}  q_BH {r['q_bh']:.4f}  q_BY {r['q_by']:.4f}  "
+          f"{'★BH显著' if r['significant_bh'] else ''}")
+print(f"  → 名义显著 {len(rows)} 个；BH 校正后 {res['n_bh']['n_significant']} 个、"
+      f"BY {res['n_by']['n_significant']} 个")
 
 # ------------------------------------------------------------
 # 2. walk-forward：代表因子四折 IC 与漂移判定

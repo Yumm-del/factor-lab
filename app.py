@@ -423,6 +423,17 @@ def render_ai_factory():
         "> **演示建议**：试试「放量突破」「低波动」「小市值」等方向，或直接点下面的灵感模板。"
     )
 
+    # 云端部署不带 .env → 无 API Key。提前告知并指路离线路径，
+    # 避免用户点击生成后撞上「缺少 DEEPSEEK_API_KEY」原始报错（P02 测试反馈）。
+    # llm_factor 模块 import 时已 load_dotenv，此处直接读环境变量即可。
+    has_api_key = bool(os.getenv("DEEPSEEK_API_KEY"))
+    if not has_api_key:
+        st.info(
+            "🔑 当前环境未配置 AI 密钥（DeepSeek API Key），**AI 生成与 AI 解读不可用**。\n\n"
+            "请用下方 **📂 演示模式**载入预置示例，或 **✏️ 手动编辑表达式**直接体检——"
+            "两条路径不调用 AI；本地运行并配置 `.env` 后可解锁完整 AI 能力。"
+        )
+
     # —— 灵感模板（降低演示门槛）——
     templates = [
         "放量后价格延续上涨（量价配合）",
@@ -435,15 +446,29 @@ def render_ai_factory():
     for col, t in zip(cols, templates):
         if col.button(t, width="stretch"):
             st.session_state["idea"] = t
+            # 即时反馈：点击后立刻 toast 告知已填入，否则小白感知不到按钮生效
+            # （P02 反馈「无论点哪个都一样」的直接来源之一）
+            st.toast(f"已填入想法：{t} → 点下方「🚀 生成并体检因子」", icon="💡")
 
     # —— 演示模式：预置示例（离线，不调 API，评委演示的保底方案）——
     with st.expander("📂 演示模式：载入预置示例（秒开，不调用 AI）"):
         presets = load_presets(PRESET_SCHEMA_VERSION)
         if not presets:
             st.caption("暂无预置示例（运行 `python scripts/make_preset.py` 生成）")
+        else:
+            # 两个预置都是「诚实拒绝」案例（一个在留出期失效、一个跨环境无信号）。
+            # 先把差异亮出来，避免小白载入后觉得「点哪个都一样」（P02 反馈）。
+            st.caption(
+                "💡 两个预置演示的是系统**如何拒绝假阳性**——载入后请看顶部"
+                "「独立复核」横幅：一个未通过留出期，一个被跨环境复核淘汰。"
+            )
         for p in presets:
-            if st.button(f"载入：{p['idea']}", key=f"preset_{p['idea']}",
-                         help=f"因子：{p['formula']}"):
+            # 按钮文字直接带独立复核结论，让示例间的差异在点击前就可见
+            iv = p.get("independent_validation") or {}
+            iv_label = (iv.get("label") or "本地体检").replace("独立复核：", "")
+            if st.button(f"载入：{p['idea']}｜结论：{iv_label}",
+                         key=f"preset_{p['idea']}",
+                         help=f"因子公式：{p['formula']}"):
                 st.session_state["last_result"] = p
 
     idea = st.text_input(
@@ -452,7 +477,16 @@ def render_ai_factory():
         placeholder="例如：我想捕捉成交量放大后延续上涨的股票",
     )
 
-    if st.button("🚀 生成并体检因子", type="primary", width="stretch", disabled=not idea.strip()):
+    # 无 API Key 时禁用生成按钮（hover 解释原因），避免用户撞上原始报错
+    generate_help = (
+        "🔑 AI 生成需 DeepSeek API Key（本地 .env 配置）。当前环境未配置，"
+        "请用 📂 演示模式或 ✏️ 手动编辑体验完整流程。"
+        if not has_api_key
+        else "调用 AI 把想法翻译成受限因子表达式，并自动完成体检"
+    )
+    if st.button("🚀 生成并体检因子", type="primary", width="stretch",
+                 disabled=(not idea.strip()) or (not has_api_key),
+                 help=generate_help):
         if not idea.strip():
             st.warning("请输入因子想法")
             return
@@ -493,7 +527,10 @@ def render_ai_factory():
                            '{"op": "ts_mean", "args": [{"op": "close"}], "param": 5}, '
                            '{"op": "ts_mean", "args": [{"op": "volume"}], "param": 20}]}]}')
             src = st.text_input("JSON 表达式树", value=default_src)
-        want_report = st.checkbox("调用 AI 生成解读报告（需 API，约 10 秒）", value=False)
+        want_report = st.checkbox(
+            "调用 AI 生成解读报告（需 API，约 10 秒）", value=False,
+            disabled=not has_api_key,  # 无 Key 时禁用勾选（本地模板报告不受影响）
+        )
         if st.button("🔬 解析并体检", type="primary", width="stretch", disabled=not src.strip()):
             try:
                 expr = dsdl.parse_formula(src) if mode.startswith("📝") else dsdl.parse_factor(src)

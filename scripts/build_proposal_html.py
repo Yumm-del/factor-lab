@@ -351,7 +351,7 @@ def main() -> None:
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>因子实验室（AI Factor Lab）· AFAC 参赛项目书</title>
+<title>因子实验室（AI Factor Lab）· 北京大学金融AI智能体创新大赛参赛项目书</title>
 <style>{CSS}</style>
 </head>
 <body>

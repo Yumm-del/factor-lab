@@ -91,7 +91,7 @@ def main() -> None:
 
     margin = 120 if not IS_A4 else 130
     draw.line((margin, 72, W - margin, 72), fill=RED, width=4)
-    draw.text((margin, 112), "北京大学金融 AI 智能体创新大赛 · 方向二",
+    draw.text((margin, 112), "北京大学金融AI智能体创新大赛 · 方向二",
               font=f_event, fill=MUTED)
 
     if not IS_A4:

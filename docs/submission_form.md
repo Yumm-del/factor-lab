@@ -43,7 +43,7 @@ AI 会生成因子，但谁来阻止它把偶然收益说成规律？因子实�
 |---|---|---|
 | Demo | `https://factor-lab-29n3ulxfgehjfbj5phsapi.streamlit.app/` | 已上线；首次访问可能需约30秒唤醒 |
 | 核心代码 | `https://github.com/Yumm-del/factor-lab` | 已公开 |
-| PDF | `docs/proposal.pdf` | 34页，自动质量门禁通过 |
+| PDF | 桌面《AI因子实验室-参赛方案书-吕滢滢.pdf》 | 39页，自动质量门禁通过 |
 | 路演 PDF | `docs/submission/factor_lab_finalist_pitch.pdf` | 10页，PowerPoint 导出并逐页视觉复核通过 |
 | 演示视频 | 按 `docs/demo_script.md` 录制，优先离线预置示例 | 待录制 |
 | PPT | `docs/submission/factor_lab_finalist_pitch.pptx` | 10页可编辑结构化演示稿；含20个 Layout、原生表格与逐页 Speaker Notes |

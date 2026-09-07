@@ -16,6 +16,8 @@
 
 > **重要：本地回测不是因子接纳结论。** 项目已在 BigQuant 独立沙箱以动态沪深300、周频 Top-30、双边 20bps 成本复核候选。原始 AI「放量延续」在本地样本内表现为正，但独立复核年化 −2.45%，已被淘汰；完整口径、原始截图与筛选结果见 [BigQuant 独立验证记录](docs/bigquant_validation.md)。
 
+> **统计显著性的存活证据同样公开。** 91 个内置因子经 Newey-West HAC 稳健 t 与 BH/BY 双口径 FDR 校正，名义显著 7 个中仅 **1 个存活**（Alpha#25：t_HAC +4.29、q_BY=0.0081）；该因子已在 BigQuant 独立数据环境复算（IC +0.0202 / t_HAC +4.00，2026-09-03，脚本 [docs/submission/bigquant_alpha25_hac_recheck.py](docs/submission/bigquant_alpha25_hac_recheck.py)，记录见验证文档 §6）。淘汰与存活证据一并公开——系统不挑好看的结果展示。
+
 ---
 
 ## 这是什么

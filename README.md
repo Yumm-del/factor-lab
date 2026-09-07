@@ -73,6 +73,16 @@ streamlit run app.py
 > 全 A 股池数据：`PYTHONIOENCODING=utf-8 python scripts/build_data_ashare.py`
 > （约 4 小时，支持断点续传；依赖 baostock 公共服务器可用性）
 
+### Streamlit Cloud 配置 AI 功能
+
+在 Streamlit Cloud 的应用页面进入 `Settings → Secrets`，添加根级 Secret：
+
+```toml
+DEEPSEEK_API_KEY = "sk-你的密钥"
+```
+
+保存后等待应用自动重启。不要把密钥提交到 GitHub、`.env.example` 或 README；未配置时，工作台仍可用“演示模式”和手动表达式完成离线体验。
+
 ## 实证与独立复核（2026-08）
 
 | 证据 | 结果 | 结论 / 复现入口 |

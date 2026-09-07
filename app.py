@@ -22,6 +22,23 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+# Streamlit Cloud 的 Secrets 不一定会在模块导入前写入 os.environ。
+# 先显式映射根级 Secret，再导入会读取 API Key 的 llm_factor，避免启动时缓存为空。
+def install_cloud_secret() -> None:
+    """将 Streamlit Cloud 根级 Secret 安全映射为运行时环境变量。"""
+    if os.getenv("DEEPSEEK_API_KEY"):
+        return
+    try:
+        key = st.secrets.get("DEEPSEEK_API_KEY")
+    except Exception:
+        # 本地无 secrets.toml 或云端尚未配置时，保留离线演示路径。
+        return
+    if key:
+        os.environ["DEEPSEEK_API_KEY"] = str(key).strip()
+
+
+install_cloud_secret()
+
 # 包导入（app.py 在项目根目录，factor_lab 是同级包）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from factor_lab import (  # noqa: E402
@@ -431,7 +448,7 @@ def render_ai_factory():
         st.info(
             "🔑 当前环境未配置 AI 密钥（DeepSeek API Key），**AI 生成与 AI 解读不可用**。\n\n"
             "请用下方 **📂 演示模式**载入预置示例，或 **✏️ 手动编辑表达式**直接体检——"
-            "两条路径不调用 AI；本地运行并配置 `.env` 后可解锁完整 AI 能力。"
+            "两条路径不调用 AI；本地运行请配置 `.env`，Streamlit Cloud 请在 Settings → Secrets 添加 `DEEPSEEK_API_KEY`。"
         )
 
     # —— 灵感模板（降低演示门槛）——
@@ -479,8 +496,8 @@ def render_ai_factory():
 
     # 无 API Key 时禁用生成按钮（hover 解释原因），避免用户撞上原始报错
     generate_help = (
-        "🔑 AI 生成需 DeepSeek API Key（本地 .env 配置）。当前环境未配置，"
-        "请用 📂 演示模式或 ✏️ 手动编辑体验完整流程。"
+        "🔑 AI 生成需 DeepSeek API Key。当前环境未配置：本地请填写 `.env`，"
+        "Streamlit Cloud 请在 Settings → Secrets 添加 `DEEPSEEK_API_KEY`。"
         if not has_api_key
         else "调用 AI 把想法翻译成受限因子表达式，并自动完成体检"
     )

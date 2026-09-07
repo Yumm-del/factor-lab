@@ -38,15 +38,16 @@ except ImportError:
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT, ".env"))
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 MODEL = "deepseek-v4-pro"
 BASE_URL = "https://api.deepseek.com"
 
 
 def _client() -> OpenAI:
-    if not DEEPSEEK_API_KEY:
-        raise RuntimeError("缺少 DEEPSEEK_API_KEY（请检查 .env）")
-    return OpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)
+    """按调用时读取密钥，兼容 Streamlit Cloud 保存 Secrets 后的热重启。"""
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise RuntimeError("缺少 DEEPSEEK_API_KEY（请检查 .env 或 Streamlit Secrets）")
+    return OpenAI(api_key=api_key, base_url=BASE_URL)
 
 
 def _llm_text(system: str, user: str, temperature: float = 0.4) -> str:
